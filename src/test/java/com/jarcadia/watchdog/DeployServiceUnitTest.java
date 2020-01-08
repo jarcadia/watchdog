@@ -81,9 +81,9 @@ public class DeployServiceUnitTest {
 
         // Setup data
         RedisMap instances = rcommando.getMap("instances");
-        instances.get("inst").set("type", "webserver", "host", "web01", "port", 8080, "state", InstanceState.ENABLED);
-        RedisMap groups = rcommando.getMap("groups");
-        groups.get("group").set("instances", Arrays.asList("inst"));
+        instances.get("inst").set("type", "webserver", "group", "group", "host", "web01", "port", 8080, "state", InstanceState.ENABLED);
+//        RedisMap groups = rcommando.getMap("groups");
+//        groups.get("group").set("instances", Arrays.asList("inst"));
 
         // Setup spied Distribution Agent
         DistributionAgent distributionAgent = Mockito.spy(new TestDistributionAgent());
@@ -102,16 +102,17 @@ public class DeployServiceUnitTest {
         // Create Deploy Service for test
         DeploymentWorker deployService = new DeploymentWorker(rcommando, deploymentAgent);
         provider.set(DeploymentWorker.class, deployService);
-        
-        // Create Distribution Service for test
+
+        // Create Distribution Worker for test
         DistributionWorker distWorker = new DistributionWorker(rcommando, distributionAgent);
         provider.set(DistributionWorker.class, distWorker);
 
         // Submit task to start deployment
         Path localPath = Paths.get("/data/releases/webserver/1.0/webserver.jar");
+        retaskService.start();
         retaskService.submit(Retask.create("deploy")
                 .param("localPath", localPath)
-                .param("groupIds", Arrays.asList("group"))
+                .param("instanceIds", Arrays.asList("inst"))
                 .param("version", "1.0")
                 .param("hash", "abc123"));
 
@@ -142,16 +143,11 @@ public class DeployServiceUnitTest {
 
         // Setup data
         RedisMap instances = rcommando.getMap("instances");
-        instances.get("inst1").set("type", "webserver", "host", "web01", "port", 8080, "state", InstanceState.ENABLED);
-        instances.get("inst2").set("type", "webserver", "host", "web02", "port", 8080, "state", InstanceState.ENABLED);
+        instances.get("inst1").set("type", "webserver", "group", "group", "host", "web01", "port", 8080, "state", InstanceState.ENABLED);
+        instances.get("inst2").set("type", "webserver", "group", "group", "host", "web02", "port", 8080, "state", InstanceState.ENABLED);
         RedisMap groups = rcommando.getMap("groups");
         groups.get("group").set("instances", Arrays.asList("inst1", "inst2"));
 
-        // Setup mocked Distribution Agent
-//        DistributionAgent distributionAgent = Mockito.mock(DistributionAgent.class);
-//        Mockito.when(distributionAgent.verify(Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(true);
-//        Path localPath = Paths.get("/data/releases/webserver/1.0/webserver.jar");
-//        Mockito.when(distributionAgent.getLocalPath("webserver", "1.0")).thenReturn(localPath);
         // Setup spied Distribution Agent
         DistributionAgent distributionAgent = Mockito.spy(new TestDistributionAgent());
 
@@ -170,9 +166,14 @@ public class DeployServiceUnitTest {
         DeploymentWorker deployService = new DeploymentWorker(rcommando, deploymentAgent);
         provider.set(DeploymentWorker.class, deployService);
 
+        // Create Distribution Worker for test
+        DistributionWorker distWorker = new DistributionWorker(rcommando, distributionAgent);
+        provider.set(DistributionWorker.class, distWorker);
+
         // Submit task to start deployment
         Path localPath = Paths.get("/data/releases/webserver/1.0/webserver.jar");
-        retaskService.submit(Retask.create("deploy").param("groupIds", Arrays.asList("group")).param("version", "1.0"));
+        retaskService.start();
+        retaskService.submit(Retask.create("deploy").param("instanceIds", Arrays.asList("inst1", "inst2")).param("version", "1.0").param("localPath", localPath));
 
         // Wait for the deployment to complete
         deployStateRecorder.awaitCompletion(1, 1, TimeUnit.SECONDS);
@@ -207,28 +208,27 @@ public class DeployServiceUnitTest {
         String[][] hosts = {{"web01", "web02"}, {"web03", "web04"}, {"web05", "web06"}, {"web07", "web08"}};
         RedisMap instances = rcommando.getMap("instances");
         RedisMap groups = rcommando.getMap("groups");
-        List<String> groupIds = new ArrayList<>();
+        List<String> instanceIds = new ArrayList<>();
         for (int i=0; i<numGroups; i++) {
             String groupId = "group" + i;
             String inst1Id = groupId + "-" + "inst1";
             String inst2Id = groupId + "-" + "inst2";
 
-            groupIds.add(groupId);
+            instanceIds.add(inst1Id);
+            instanceIds.add(inst2Id);
             String[] groupHosts = hosts[random.nextInt(hosts.length)];
-            instances.get(inst1Id).set("type", "webserver", "host", groupHosts[0], "port", 8080 + i, "state", InstanceState.ENABLED);
-            instances.get(inst2Id).set("type", "webserver", "host", groupHosts[1], "port", 8080 + i, "state", InstanceState.ENABLED);
+            instances.get(inst1Id).set("type", "webserver", "group", groupId, "host", groupHosts[0], "port", 8080 + i, "state", InstanceState.ENABLED);
+            instances.get(inst2Id).set("type", "webserver", "group", groupId, "host", groupHosts[1], "port", 8080 + i, "state", InstanceState.ENABLED);
             groups.get(groupId).set("instances", Arrays.asList(inst1Id, inst2Id));
         }
-
-        // Setup mocked Distribution Agent
-//        DistributionAgent distributionAgent = Mockito.mock(DistributionAgent.class);
-//        Mockito.when(distributionAgent.verify(Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(true);
-//        Path localPath = Paths.get("/data/releases/webserver/1.0/webserver.jar");
-//        Mockito.when(distributionAgent.getLocalPath("webserver", "1.0")).thenReturn(localPath);
 
         // Setup spied Deployment Agent
         DeploymentAgent deploymentAgent = Mockito.spy(new TestDeploymentAgent());
         provider.set(DeploymentAgent.class, deploymentAgent);
+        
+        // Setup spied Distribution Agent
+        DistributionAgent distributionAgent = Mockito.spy(new TestDistributionAgent());
+        provider.set(DistributionAgent.class, distributionAgent);
 
         // Setup InstateStateRecorder for assertions
         InstanceStateRecorder stateRecorder = new InstanceStateRecorder();
@@ -242,22 +242,21 @@ public class DeployServiceUnitTest {
         DeploymentWorker deployService = new DeploymentWorker(rcommando, deploymentAgent);
         provider.set(DeploymentWorker.class, deployService);
 
+        // Create Distribution Worker for test
+        DistributionWorker distWorker = new DistributionWorker(rcommando, distributionAgent);
+        provider.set(DistributionWorker.class, distWorker);
+
         // Submit task to start deployment
         Path localPath = Paths.get("/data/releases/webserver/1.0/webserver.jar");
-        retaskService.submit(Retask.create("deploy").param("groupIds", groupIds).param("version", "1.0"));
+        retaskService.start();
+        retaskService.submit(Retask.create("deploy").param("instanceIds", instanceIds).param("version", "1.0").param("localPath", localPath));
 
         // Wait for the deployment to complete
         deployStateRecorder.awaitCompletion(numGroups, 10, TimeUnit.SECONDS);
 
-        for (String groupId : groupIds) {
-            String inst1Id = groupId + "-" + "inst1";
-            String inst2Id = groupId + "-" + "inst2";
-            
-            Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates(inst1Id));
-            Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates(inst2Id));
-
-            verifyDeployAgent(deploymentAgent, "instances", inst1Id);
-            verifyDeployAgent(deploymentAgent, "instances", inst2Id);
+        for (String instanceId : instanceIds) {
+            Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates(instanceId));
+            verifyDeployAgent(deploymentAgent, "instances", instanceId);
         }
         retaskService.shutdown(10, TimeUnit.SECONDS);
     }

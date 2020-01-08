@@ -6,7 +6,6 @@ import java.io.StringWriter;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -43,25 +42,29 @@ public class DeploymentWorker {
     }
 
     @RetaskHandler("deploy")
-    public List<Retask> deploy(RedisMap instances, List<String> groupIds, String version, Path localPath, String hash) {
+    public List<Retask> deploy(RedisMap instances, RedisMap deployments, Set<String> instanceIds, String version, Path localPath, String hash) {
         String cohortId = UUID.randomUUID().toString();
         
-        Map<String, List<String>> instancesByGroup = groupIds.stream()
-                .map(groupId -> rcommando.getMap("groups").get(groupId))
-                .collect(Collectors.toMap(RedisObject::getId, obj -> obj.get("instances").asListOf(String.class)));
-
-        Map<String, String> instanceToGroupMap = new HashMap<>();
-        for (Entry<String, List<String>> entry : instancesByGroup.entrySet()) {
-            for (String instance : entry.getValue()) {
-                instanceToGroupMap.put(instance, entry.getKey());
-            }
-        }
+//        Map<String, List<String>> instancesByGroup = groupIds.stream()
+//                .map(groupId -> rcommando.getMap("groups").get(groupId))
+//                .collect(Collectors.toMap(RedisObject::getId, obj -> obj.get("instances").asListOf(String.class)));
+//
+//        Map<String, String> instanceToGroupMap = new HashMap<>();
+//        for (Entry<String, List<String>> entry : instancesByGroup.entrySet()) {
+//            for (String instance : entry.getValue()) {
+//                instanceToGroupMap.put(instance, entry.getKey());
+//            }
+//        }
         
-        Set<String> instanceIds = instanceToGroupMap.keySet();
+//        Set<String> instanceIds = instanceToGroupMap.keySet();
+        
+        List<RedisObject> deployInstances = instanceIds.stream()
+                .map(id -> instances.get(id))
+                .collect(Collectors.toList());
         
         // Confirm all instances are the same type
-        List<String> types = instanceIds.stream()
-                .map(id -> instances.get(id).get("type").asString())
+        List<String> types = deployInstances.stream()
+                .map(i -> i.get("type").asString())
                 .distinct()
                 .collect(Collectors.toList());
         if (types.size() > 1) {
@@ -74,19 +77,21 @@ public class DeploymentWorker {
         if (alreadyDeploying.size() > 0) {
             throw new DeploymentException(String.format("%s is already part of active deployment", alreadyDeploying.toString()));
         }
+        
+        // Group the instances, according to their groupId or their ID if not part of a group
+        Map<String, List<RedisObject>> groupedInstances = instances.stream()
+                .collect(Collectors.groupingBy(i -> i.get("group").isNull() ? i.getId() : i.get("group").asString()));
 
         // Prepare the deployments
-        RedisMap deployments = rcommando.getMap("deployments");
         List<Retask> tasks = new ArrayList<>();
-        for (String groupId : groupIds) {
+        for (List<RedisObject> groupInstances : groupedInstances.values()) {
             RedisObject deployment = deployments.get(UUID.randomUUID().toString());
-            List<String> deploymentInstances = instancesByGroup.get(groupId);
-            deployment.checkedSet("cohort", cohortId, "group", groupId, "remaining", deploymentInstances);
+            deployment.checkedSet("cohort", cohortId, "remaining", groupInstances.stream().map(RedisObject::getId).collect(Collectors.toList()));
             tasks.add(Retask.create("deploy.advance").param("deploymentId", deployment.getId()));
 
-            for (String instanceId : deploymentInstances) {
-                instances.get(instanceId).checkedSet("deploymentId", deployment.getId(), "deploymentState", DeployState.Waiting);
-                rcommando.core().sadd("deploy.pending", instanceId);
+            for (RedisObject instance : groupInstances) {
+                instance.checkedSet("deploymentId", deployment.getId(), "deploymentState", DeployState.Waiting);
+                rcommando.core().sadd("deploy.pending", instance.getId());
             }
         }
         

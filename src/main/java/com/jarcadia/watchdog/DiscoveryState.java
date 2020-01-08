@@ -1,4 +1,4 @@
-package com.jarcadia.watchdog.discovery;
+package com.jarcadia.watchdog;
 
 public enum DiscoveryState {
     
