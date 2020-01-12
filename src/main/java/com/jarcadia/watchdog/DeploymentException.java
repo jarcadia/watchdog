@@ -1,4 +1,4 @@
-package com.jarcadia.watchdog.deploy;
+package com.jarcadia.watchdog;
 
 public class DeploymentException extends RuntimeException {
 

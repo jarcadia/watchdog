@@ -1,4 +1,4 @@
-package com.jarcadia.watchdog.deploy;
+package com.jarcadia.watchdog;
 
 import java.util.List;
 

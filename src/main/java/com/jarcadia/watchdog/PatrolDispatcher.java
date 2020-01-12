@@ -86,7 +86,7 @@ class PatrolDispatcher {
         }
         
         protected void prepareTaskParameters(Retask task, RedisObject obj) {
-            task.objParam(obj);
+            task.param("object", obj);
             RedisValues values = obj.get(paramNames);
             for (Param param : params) {
                 task.param(param.getName(), values.next().as(param.getType()));

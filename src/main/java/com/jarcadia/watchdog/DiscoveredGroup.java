@@ -8,16 +8,17 @@ import java.util.stream.Collectors;
 import com.jarcadia.rcommando.RedisObject;
 
 public class DiscoveredGroup {
-    
+
     private final String type;
     private final String id;
     private final Map<String, Object> props;
-    
-    public DiscoveredGroup(String type, String id, List<RedisObject> instances) {
+
+    public DiscoveredGroup(String type, String id, String name, List<RedisObject> instances) {
         this.id = id;
         this.type = type;
         this.props = new HashMap<>();
         this.props.put("type", type);
+        this.props.put("name", name);
         this.props.put("instances", instances.stream().map(RedisObject::getId).collect(Collectors.toList()));
     }
     

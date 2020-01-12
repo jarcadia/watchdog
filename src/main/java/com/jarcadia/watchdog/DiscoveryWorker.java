@@ -41,13 +41,15 @@ public class DiscoveryWorker {
         
         // TODO add atomic boolean lock to only discover one at a time
         
-        Collection<DiscoveredInstance> discoveredInstances = agent.discover();
+        Collection<DiscoveredInstance> discoveredInstances = agent.discoverInstances();
         Map<String, List<RedisObject>> instancesByType = new HashMap<>();
         DiscoveryResultsMap instanceResults = new DiscoveryResultsMap();
 
         // Process discovered instances
         for (DiscoveredInstance discovered : discoveredInstances) {
             RedisObject obj = instances.get(discovered.getId());
+            Map<String, Object> props = discovered.getProps();
+            props.put("discoveryId", discoveryId);
             Optional<CheckedSetMultiFieldResult> result = obj.checkedSet(discovered.getProps());
             if (result.isPresent()) {
                 if (result.get().isInsert()) {
@@ -59,7 +61,6 @@ public class DiscoveryWorker {
             } else {
                 instanceResults.markExisting(discovered.getType());
             }
-            obj.set("discoveryId", discoveryId);
             instancesByType.computeIfAbsent(discovered.getType(), type -> new ArrayList<>()).add(obj);
             instanceResults.markDiscovered(discovered.getType());
         }
@@ -96,7 +97,7 @@ public class DiscoveryWorker {
             } else {
                 groupResults.markExisting(discovered.getType());
             }
-            group.set("discoveryId", discoveryId);
+            group.checkedSet("discoveryId", discoveryId);
             groupResults.markDiscovered(discovered.getType());
         }
 
@@ -110,11 +111,11 @@ public class DiscoveryWorker {
             }
         }
 
-        // Set groupId in each instance that is part of a group
+        // Set group in each instance that is part of a group
         for (RedisObject group : groups) {
             List<String> groupInstanceIds = group.get("instances").asListOf(String.class);
             for (String instanceId : groupInstanceIds) {
-                instances.get(instanceId).set("groupId", group.getId());
+                instances.get(instanceId).checkedSet("group", group.getId());
             }
             
         }
@@ -185,7 +186,7 @@ public class DiscoveryWorker {
         }
 
     }
-    
+
     private class DiscoveryResultCounts {
         private int discovered;
         private int existing;
@@ -245,6 +246,5 @@ public class DiscoveryWorker {
             }
             return joiner.toString();
         }
-
     }
 }

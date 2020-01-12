@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -37,12 +38,6 @@ import com.jarcadia.retask.annontations.RetaskChangeHandler;
 import com.jarcadia.retask.annontations.RetaskDeleteHandler;
 import com.jarcadia.retask.annontations.RetaskInsertHandler;
 import com.jarcadia.retask.annontations.RetaskWorker;
-import com.jarcadia.watchdog.deploy.DeployState;
-import com.jarcadia.watchdog.deploy.DeploymentAgent;
-import com.jarcadia.watchdog.deploy.DeploymentWorker;
-import com.jarcadia.watchdog.distribute.DistributionAgent;
-import com.jarcadia.watchdog.distribute.DistributionState;
-import com.jarcadia.watchdog.distribute.DistributionWorker;
 
 import io.lettuce.core.RedisClient;
 
@@ -82,11 +77,13 @@ public class DeployServiceUnitTest {
         // Setup data
         RedisMap instances = rcommando.getMap("instances");
         instances.get("inst").set("type", "webserver", "group", "group", "host", "web01", "port", 8080, "state", InstanceState.ENABLED);
+        
+        rcommando.getMap("binaries").get("webserver_1.0").checkedSet("type", "quotewin", "version", "1.0");
 //        RedisMap groups = rcommando.getMap("groups");
-//        groups.get("group").set("instances", Arrays.asList("inst"));
+//        groups.get("group").set("instances", Arrelect 15ys.asList("inst"));
 
         // Setup spied Distribution Agent
-        DistributionAgent distributionAgent = Mockito.spy(new TestDistributionAgent());
+        BinaryAgent binaryAgent = Mockito.spy(new TestBinaryAgent());
 
         // Setup spied Deployment Agent
         DeploymentAgent deploymentAgent = Mockito.spy(new TestDeploymentAgent());
@@ -104,29 +101,27 @@ public class DeployServiceUnitTest {
         provider.set(DeploymentWorker.class, deployService);
 
         // Create Distribution Worker for test
-        DistributionWorker distWorker = new DistributionWorker(rcommando, distributionAgent);
+        DistributionWorker distWorker = new DistributionWorker(rcommando, binaryAgent);
         provider.set(DistributionWorker.class, distWorker);
 
         // Submit task to start deployment
-        Path localPath = Paths.get("/data/releases/webserver/1.0/webserver.jar");
         retaskService.start();
         retaskService.submit(Retask.create("deploy")
-                .param("localPath", localPath)
                 .param("instanceIds", Arrays.asList("inst"))
-                .param("version", "1.0")
-                .param("hash", "abc123"));
+                .param("binaryId", "webserver_1.0"));
 
         // Wait for the deployment to complete
         deployStateRecorder.awaitCompletion(1, 1, TimeUnit.HOURS);
 
         // Verify the instances deploy states progressed as expected
+        System.out.println(deployStateRecorder.getStates("inst"));
         Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates("inst"));
 
         // Verify the instances states progressed as expected
         Assertions.assertIterableEquals(expectedInstanceStates(), stateRecorder.getStates("inst"));
 
         // Verify the distribution agent callbacks where invoked in order
-        verifyDistAgent(distributionAgent, "web01", localPath);
+//        verifyDistAgent(binaryAgent, "web01", localPath);
 
         // Verify the deployment agent spy callbacks were invoked in order
         verifyDeployAgent(deploymentAgent, "instances", "inst");
@@ -148,8 +143,10 @@ public class DeployServiceUnitTest {
         RedisMap groups = rcommando.getMap("groups");
         groups.get("group").set("instances", Arrays.asList("inst1", "inst2"));
 
+        rcommando.getMap("binaries").get("webserver_1.0").checkedSet("type", "quotewin", "version", "1.0");
+
         // Setup spied Distribution Agent
-        DistributionAgent distributionAgent = Mockito.spy(new TestDistributionAgent());
+        BinaryAgent binaryAgent = Mockito.spy(new TestBinaryAgent());
 
         // Setup spied Deployment Agent
         DeploymentAgent deploymentAgent = Mockito.spy(new TestDeploymentAgent());
@@ -167,18 +164,20 @@ public class DeployServiceUnitTest {
         provider.set(DeploymentWorker.class, deployService);
 
         // Create Distribution Worker for test
-        DistributionWorker distWorker = new DistributionWorker(rcommando, distributionAgent);
+        DistributionWorker distWorker = new DistributionWorker(rcommando, binaryAgent);
         provider.set(DistributionWorker.class, distWorker);
 
         // Submit task to start deployment
-        Path localPath = Paths.get("/data/releases/webserver/1.0/webserver.jar");
         retaskService.start();
-        retaskService.submit(Retask.create("deploy").param("instanceIds", Arrays.asList("inst1", "inst2")).param("version", "1.0").param("localPath", localPath));
+        retaskService.submit(Retask.create("deploy")
+                .param("instanceIds",  Arrays.asList("inst1", "inst2"))
+                .param("binaryId", "webserver_1.0"));
 
         // Wait for the deployment to complete
-        deployStateRecorder.awaitCompletion(1, 1, TimeUnit.SECONDS);
+        deployStateRecorder.awaitCompletion(1, 1, TimeUnit.HOURS);
 
         // Verify the instances deploy states progressed as expected
+        System.out.println(deployStateRecorder.getStates("inst1"));
         Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates("inst1"));
         Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates("inst2"));
 
@@ -187,8 +186,8 @@ public class DeployServiceUnitTest {
         Assertions.assertIterableEquals(expectedInstanceStates(), stateRecorder.getStates("inst2"));
 
         // Verify the distribution agent callbacks where invoked in order
-        verifyDistAgent(distributionAgent, "web01", localPath);
-        verifyDistAgent(distributionAgent, "web02", localPath);
+//        verifyDistAgent(distributionAgent, "web01", localPath);
+//        verifyDistAgent(distributionAgent, "web02", localPath);
 
         // Verify the deployment agent spy callbacks were invoked in order
         verifyDeployAgent(deploymentAgent, "instances", "inst1");
@@ -222,13 +221,14 @@ public class DeployServiceUnitTest {
             groups.get(groupId).set("instances", Arrays.asList(inst1Id, inst2Id));
         }
 
+        rcommando.getMap("binaries").get("webserver_1.0").checkedSet("type", "quotewin", "version", "1.0");
+
         // Setup spied Deployment Agent
         DeploymentAgent deploymentAgent = Mockito.spy(new TestDeploymentAgent());
         provider.set(DeploymentAgent.class, deploymentAgent);
         
         // Setup spied Distribution Agent
-        DistributionAgent distributionAgent = Mockito.spy(new TestDistributionAgent());
-        provider.set(DistributionAgent.class, distributionAgent);
+        BinaryAgent binaryAgent = Mockito.spy(new TestBinaryAgent());
 
         // Setup InstateStateRecorder for assertions
         InstanceStateRecorder stateRecorder = new InstanceStateRecorder();
@@ -243,13 +243,14 @@ public class DeployServiceUnitTest {
         provider.set(DeploymentWorker.class, deployService);
 
         // Create Distribution Worker for test
-        DistributionWorker distWorker = new DistributionWorker(rcommando, distributionAgent);
+        DistributionWorker distWorker = new DistributionWorker(rcommando, binaryAgent);
         provider.set(DistributionWorker.class, distWorker);
 
         // Submit task to start deployment
-        Path localPath = Paths.get("/data/releases/webserver/1.0/webserver.jar");
         retaskService.start();
-        retaskService.submit(Retask.create("deploy").param("instanceIds", instanceIds).param("version", "1.0").param("localPath", localPath));
+        retaskService.submit(Retask.create("deploy")
+                .param("instanceIds",  instanceIds)
+                .param("binaryId", "webserver_1.0"));
 
         // Wait for the deployment to complete
         deployStateRecorder.awaitCompletion(numGroups, 10, TimeUnit.SECONDS);
@@ -269,10 +270,10 @@ public class DeployServiceUnitTest {
     private List<DeployState> expectedDeployStates() {
         return Arrays.asList(DeployState.Waiting, DeployState.Ready, DeployState.PendingDisable, DeployState.Disabling,
                 DeployState.PendingStop, DeployState.Stopping, DeployState.PendingUpgrade, DeployState.Upgrading, DeployState.Upgraded,
-                DeployState.PendingStart, DeployState.Starting, DeployState.PendingEnable, DeployState.Enabling);
+                DeployState.PendingStart, DeployState.Starting, DeployState.PendingEnable, DeployState.Enabling, DeployState.Online, null);
     }
 
-    private void verifyDistAgent(DistributionAgent agent, String host, Path localPath) {
+    private void verifyDistAgent(BinaryAgent agent, String host, Path localPath) {
 //        InOrder distVerifier = Mockito.inOrder(agent);
 //        distVerifier.verify(agent).getLocalPath("webserver", "1.0");
 //        distVerifier.verify(agent).hash(localPath);
@@ -290,16 +291,33 @@ public class DeployServiceUnitTest {
         depVerifer.verify(agent, Mockito.times(1)).enable(expectedInstance);
     }
     
-    public class TestDistributionAgent implements DistributionAgent {
+    public class TestBinaryAgent implements BinaryAgent {
+
+//        @Override
+//        public void transfer(RedisObject distribution, String host, Path localPath, Path remotePath) {
+//            distribution.checkedSet("state", DistributionState.Transferred);
+//        }
+//
+//        @Override
+//        public void verify(RedisObject distribution, String host, Path remotePath, String hash) {
+//            distribution.checkedSet("state", DistributionState.Verified);
+//        }
 
         @Override
-        public void transfer(RedisObject distribution, String host, Path localPath, Path remotePath) {
-            distribution.checkedSet("state", DistributionState.Transferred);
+        public Collection<DiscoveredBinary> discoverBinaries() {
+            // Not used in this test
+            return Collections.emptyList();
         }
 
         @Override
-        public void verify(RedisObject distribution, String host, Path remotePath, String hash) {
-            distribution.checkedSet("state", DistributionState.Verified);
+        public String hash(RedisObject binary) {
+            // Not used in this test
+            return null;
+        }
+
+        @Override
+        public boolean transfer(String host, RedisObject binary, RedisObject distribution) {
+            return true;
         }
         
     }
@@ -323,10 +341,6 @@ public class DeployServiceUnitTest {
             instance.checkedSet("state", InstanceState.DOWN);
         }
 
-        public void upgrade(RedisObject instance) {
-            logger.info("Upgrading {}", instance.getId());
-        }
-
         public void start(RedisObject instance) {
             logger.info("Starting {}", instance.getId());
             instance.checkedSet("state", InstanceState.DISABLED);
@@ -339,6 +353,13 @@ public class DeployServiceUnitTest {
 
         public void upgrade(RedisObject instance, RedisObject distribution) {
             logger.info("Upgrading {}", instance.getId());
+            try {
+                Thread.sleep(100);
+            }
+            catch (InterruptedException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
             instance.checkedSet("deploymentState", DeployState.Upgraded);
         }
     }
@@ -355,7 +376,7 @@ public class DeployServiceUnitTest {
         @RetaskChangeHandler(mapKey = "instances", field = "state")
         public void changeState(RedisObject instance, InstanceState before, InstanceState after) {
             stateMap.computeIfAbsent(instance.getId(), id -> Collections.synchronizedList(new ArrayList<>())).add(after);
-            logger.info("Recording state change for {}: {} -> {}", instance.getId(), before, after);
+            logger.info("State change for {}: {} -> {}", instance.getId(), before, after);
         }
 
         public List<InstanceState> getStates(String instanceId) {
@@ -387,7 +408,9 @@ public class DeployServiceUnitTest {
         @RetaskChangeHandler(mapKey = "instances", field = "deploymentState")
         public void changeState(RedisObject instance, DeployState before, DeployState after) {
             synchronized (this) {
+                logger.info("State change for {}: {} -> {}", instance.getId(), before, after);
                 stateMap.computeIfAbsent(instance.getId(), id -> Collections.synchronizedList(new ArrayList<>())).add(after);
+                
             }
         }
 
