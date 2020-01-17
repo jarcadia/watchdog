@@ -1,35 +1,25 @@
 package com.jarcadia.watchdog;
 
 public enum DeployState {
-    
-    
-//    Distributing,
-//    Distributed,
     Waiting,
     Ready,
-    
-    PendingDisable,
-    Disabling,
-//    Offline,
+
+    PendingDrain,
+    Draining,
 
     PendingStop,
     Stopping,
-//    Stopped,
-    
+
     PendingUpgrade,
     PendingDistribution,
     Upgrading,
     Upgraded,
-    
+
     PendingStart,
     Starting,
-//    Started,
 
     PendingEnable,
     Enabling,
-
-    Online,
-    Idle,
     
     Failed;
     

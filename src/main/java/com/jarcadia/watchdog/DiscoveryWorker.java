@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import com.jarcadia.rcommando.CheckedSetMultiFieldResult;
 import com.jarcadia.rcommando.RedisMap;
 import com.jarcadia.rcommando.RedisObject;
+import com.jarcadia.retask.Retask;
 import com.jarcadia.retask.annontations.RetaskHandler;
 import com.jarcadia.retask.annontations.RetaskWorker;
 
@@ -33,10 +34,50 @@ public class DiscoveryWorker {
         this.dispatcher = dispatcher;
     }
 
-    @RetaskHandler("discover")
+    @RetaskHandler("discover.artifacts")
+    public void discoverArtifacts(RedisMap artifacts) {
+        logger.info("Starting artifact discovery");
+        String discoveryId = UUID.randomUUID().toString();
+        
+        Set<DiscoveredArtifact> discoveredArtifacts = agent.discoverArtifacts();
+        DiscoveryResultsMap artifactResults = new DiscoveryResultsMap();
+        for (DiscoveredArtifact discovered : discoveredArtifacts) {
+            RedisObject artifact = artifacts.get(discovered.getId());
+            Optional<CheckedSetMultiFieldResult> result = artifact.checkedSet(discovered.getProps());
+            if (result.isPresent()) {
+                if (result.get().isInsert()) {
+                    artifactResults.markAdded(discovered.getType());
+                } else {
+                    artifactResults.markModified(discovered.getType());
+                }
+            } else {
+                artifactResults.markExisting(discovered.getType());
+            }
+            artifact.checkedSet("discoveryId", discoveryId);
+            artifactResults.markDiscovered(discovered.getType());
+        }
+
+        // Remove stale instances
+        for (RedisObject instance : artifacts) {
+            String type = instance.get("type").asString();
+            if (!discoveryId.equals(instance.get("discoveryId").asString())) {
+                dispatcher.cancelPatrolsFor(type, instance);
+                instance.checkedDelete();
+                artifactResults.markRemoved(type);
+            }
+        }
+
+        artifactResults.getTypes().stream().sorted().forEach(type -> {
+            if (artifactResults.isRelevant(type)) {
+                logger.info("Discovered {} {} artifacts ({})", artifactResults.getDiscovered(type), type, artifactResults.getChangesString(type));
+            }
+        });
+    }
+
+    @RetaskHandler("discover.instances")
     public void discover(RedisMap instances, RedisMap groups) throws Exception {
         
-        logger.info("Starting discovery");
+        logger.info("Starting instance discovery");
         String discoveryId = UUID.randomUUID().toString();
         
         // TODO add atomic boolean lock to only discover one at a time
@@ -47,22 +88,21 @@ public class DiscoveryWorker {
 
         // Process discovered instances
         for (DiscoveredInstance discovered : discoveredInstances) {
-            RedisObject obj = instances.get(discovered.getId());
-            Map<String, Object> props = discovered.getProps();
-            props.put("discoveryId", discoveryId);
-            Optional<CheckedSetMultiFieldResult> result = obj.checkedSet(discovered.getProps());
+            RedisObject instance = instances.get(discovered.getId());
+            Optional<CheckedSetMultiFieldResult> result = instance.checkedSet(discovered.getProps());
             if (result.isPresent()) {
                 if (result.get().isInsert()) {
                     instanceResults.markAdded(discovered.getType());
                 } else {
                     instanceResults.markModified(discovered.getType());
                 }
-                dispatcher.dispatchPatrolsFor(discovered.getType(), obj);
+                dispatcher.dispatchPatrolsFor(discovered.getType(), instance);
             } else {
                 instanceResults.markExisting(discovered.getType());
             }
-            instancesByType.computeIfAbsent(discovered.getType(), type -> new ArrayList<>()).add(obj);
+            instancesByType.computeIfAbsent(discovered.getType(), type -> new ArrayList<>()).add(instance);
             instanceResults.markDiscovered(discovered.getType());
+            instance.checkedSet("discoveryId", discoveryId);
         }
 
         // Remove stale instances

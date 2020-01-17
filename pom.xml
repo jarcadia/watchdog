@@ -8,14 +8,8 @@
     <artifactId>watchdog</artifactId>
     <version>1.0-SNAPSHOT</version>
 
-    <name>retask</name>
-    <url>https://jarcadia.com/retask</url>
-
-    <properties>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-    </properties>
+    <name>watchdog</name>
+    <url>https://jarcadia.com/watchdog</url>
 
     <dependencies>
         <dependency>
@@ -53,5 +47,36 @@
         </dependency>
     </dependencies>
     <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.1</version>
+                <configuration>
+                	<release>13</release>
+                    <compilerArgs>
+                        <!-- Enable parameters for reflected method invocation -->
+                        <arg>-parameters</arg>
+                        <!-- Enable preview for text blocks (can remove once text blocks are part of language)-->
+                        <arg>--enable-preview</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.0.0-M4</version>
+                    <!-- Enable preview for text blocks (can remove once text blocks are part of language)-->
+                    <configuration>
+						<argLine>--enable-preview</argLine><!-- 
+                        <forkCount>1</forkCount> -->
+                       <!--  <reuseForks>false</reuseForks> -->
+					</configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
     </build>
 </project>
