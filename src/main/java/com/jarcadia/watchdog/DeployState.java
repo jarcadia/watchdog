@@ -22,18 +22,4 @@ public enum DeployState {
     Enabling,
     
     Failed;
-    
-    public boolean is(DeployState other) {
-        return this == other;
-    }
-    
-    public boolean isIn(DeployState... states) {
-        for (DeployState state : states) {
-            if (state == this) {
-                return true;
-            }
-        }
-        return false;
-    }
-
 }

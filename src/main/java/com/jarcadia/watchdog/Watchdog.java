@@ -1,38 +1,36 @@
 package com.jarcadia.watchdog;
 
 import com.jarcadia.rcommando.RedisCommando;
-import com.jarcadia.retask.RetaskInit;
+import com.jarcadia.retask.Retask;
+import com.jarcadia.retask.RetaskContext;
+import com.jarcadia.retask.RetaskManager;
 import com.jarcadia.retask.RetaskRecruiter;
-import com.jarcadia.retask.RetaskService;
-import com.jarcadia.retask.RetaskWorkerInstanceProvider;
 
 import io.lettuce.core.RedisClient;
 
 public class Watchdog {
     
-    public static RetaskService init(RedisClient redisClient, RedisCommando rcommando, RetaskWorkerInstanceProvider instanceProvider, String packageName,
-            DiscoveryAgent discoveryAgent) {
+    public static RetaskManager init(RedisClient redisClient, RedisCommando rcommando, RetaskContext context, String packageName) {
 
-        // Init Retask
+    	// Setup recruitment from source package and internal package
         RetaskRecruiter recruiter = new RetaskRecruiter();
+        recruiter.registerTaskHandlerAnnontation(WatchdogPatrol.class, (clazz, method, annotation) -> "patrol." + method.getName());
         recruiter.recruitFromPackage(packageName);
         recruiter.recruitFromPackage("com.jarcadia.watchdog");
 
         // Setup wrapper instance provider
-        WatchdogRetaskWorkerInstanceProvider wdInstanceProvider = new WatchdogRetaskWorkerInstanceProvider(instanceProvider);
-
-        RetaskService retaskService = RetaskInit.init(redisClient, rcommando, recruiter, wdInstanceProvider);
+        WatchdogRetaskWorkerInstanceProvider wdInstanceProvider = new WatchdogRetaskWorkerInstanceProvider(context);
+        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter, wdInstanceProvider);
 
         // Setup dispatcher and discovery worker
-        PatrolDispatcher dispatcher = new PatrolDispatcher(retaskService, packageName);
-        DiscoveryWorker discoveryWorker = new DiscoveryWorker(discoveryAgent, dispatcher);
+        PatrolDispatcher dispatcher = new PatrolDispatcher(manager.getInstance(), rcommando.getObjectMapper());
+        DiscoveryWorker discoveryWorker = new DiscoveryWorker(dispatcher);
         wdInstanceProvider.setDiscoveryWorker(discoveryWorker);
 
         // Setup deployment worker
-        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando, retaskService);
+        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando);
         wdInstanceProvider.setDeploymentWorker(deploymentWorker);
 
-        retaskService.start();
-        return retaskService;
+        return manager;
     }
 }

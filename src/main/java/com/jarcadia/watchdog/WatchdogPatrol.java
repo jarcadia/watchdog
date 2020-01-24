@@ -7,11 +7,10 @@ import java.lang.annotation.Target;
 import java.util.concurrent.TimeUnit;
 
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.TYPE)
+@Target(ElementType.METHOD)
 public @interface WatchdogPatrol {
     
     String type();
-    String routingKey();
     long interval();
     TimeUnit unit();
     String[] properties() default {};

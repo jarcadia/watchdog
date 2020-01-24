@@ -1,23 +1,21 @@
 package com.jarcadia.watchdog;
 
-import java.lang.reflect.Method;
-import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
-import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.reflections.Reflections;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.jarcadia.rcommando.RedisObject;
-import com.jarcadia.rcommando.RedisValues;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarcadia.rcommando.RcObject;
+import com.jarcadia.rcommando.RcValues;
+import com.jarcadia.retask.HandlerMethod;
 import com.jarcadia.retask.Retask;
-import com.jarcadia.retask.RetaskService;
-import com.jarcadia.retask.annontations.RetaskHandler;
+import com.jarcadia.retask.Task;
 
 import io.netty.util.internal.ThreadLocalRandom;
 
@@ -25,91 +23,123 @@ class PatrolDispatcher {
     
     private final Logger logger = LoggerFactory.getLogger(PatrolDispatcher.class);
 
-    private final RetaskService retaskService;
-    private final Map<Patrol, ParamProducer> patrols;
+    private final List<Patrol> patrols;
 
-    PatrolDispatcher(RetaskService retaskService, String packageName) {
-        this.retaskService = retaskService;
-        this.patrols = new HashMap<>();
+    protected PatrolDispatcher(Retask retask, ObjectMapper objectMapper) {
 
-        Reflections reflections = new Reflections(packageName);
-        for (Class<?> clazz : reflections.getTypesAnnotatedWith(WatchdogPatrol.class)) {
-            WatchdogPatrol patrolAnnotation = clazz.getAnnotation(WatchdogPatrol.class);
+        List<HandlerMethod<WatchdogPatrol>> patrolHandlers = retask.getRecruitsByAnnontation(WatchdogPatrol.class);
+        List<Patrol> list = new LinkedList<>();
+        for (HandlerMethod<WatchdogPatrol> handler : patrolHandlers) {
+        	WatchdogPatrol annontation = handler.getAnnontation();
+        	List<PatrolParam> params = Stream.of(handler.getMethod().getParameters())
+                    .filter(p -> Stream.of(annontation.properties()).anyMatch(prop -> prop.equals(p.getName())))
+                    .map(p -> new PatrolParam(p.getName(), objectMapper.constructType(p.getParameterizedType())))
+                    .collect(Collectors.toList());
+        	PatrolParamProducer paramProducer = new PatrolParamProducer(params);
+            list.add(new Patrol(annontation.type(), handler.getRoutingKey(),
+            		annontation.interval(), annontation.unit(), paramProducer));
 
-            // Identify the target routingKey
-            for (Method method : clazz.getMethods()) {
-                RetaskHandler handlerAnnotation = method.getAnnotation(RetaskHandler.class);
-                if (handlerAnnotation != null && handlerAnnotation.value().equals(patrolAnnotation.routingKey())) {
-                    Patrol patrol = new Patrol(patrolAnnotation.type(), patrolAnnotation.routingKey(), patrolAnnotation.interval(), patrolAnnotation.unit());
-                    List<Param> params = Stream.of(method.getParameters())
-                            .filter(p -> Stream.of(patrolAnnotation.properties()).anyMatch(prop -> prop.equals(p.getName())))
-                            .map(p -> new Param(p.getType(), p.getName()))
-                            .collect(Collectors.toList());
-                    patrols.put(patrol, new ParamProducer(params));
-                }
-            }
         }
+        this.patrols = List.copyOf(list);
     }
 
-    public void dispatchPatrolsFor(String type, RedisObject object) {
-        for (Patrol patrol : patrols.keySet()) {
+    public void dispatchPatrolsFor(Retask retask, String type, RcObject instance) {
+        for (Patrol patrol : patrols) {
             if (patrol.getType().equals(type) || patrol.getType().equals("*")) {
-                String recurKey = patrol.getRoutingKey() + "." + object.getId();
+                String recurKey = patrol.getRoutingKey() + "." + instance.getId();
                 long delayMillis = ThreadLocalRandom.current().nextLong(patrol.getUnit().toMillis(patrol.getInterval()));
-                Retask task = Retask.create(patrol.getRoutingKey())
+                Task task = Task.create(patrol.getRoutingKey())
                         .in(delayMillis, TimeUnit.MILLISECONDS)
                         .recurEvery(recurKey, patrol.getInterval(), patrol.getUnit());
-                patrols.get(patrol).prepareTaskParameters(task, object);
-                retaskService.submit(task);
-                logger.info("Dispatched {} for {} {} in {}", patrol.getRoutingKey(), type, object.getId(), delayMillis);
+                patrol.prepareTaskParameters(task, instance);
+                retask.submit(task);
+                logger.info("Dispatched patrol {} for {} {} in {}", patrol.getRoutingKey(), type, instance.getId(), delayMillis);
             }
         }
     }
 
-    public void cancelPatrolsFor(String type, RedisObject object) {
-        for (Patrol patrol : patrols.keySet()) {
+    public void cancelPatrolsFor(Retask retask, String type, RcObject instance) {
+        for (Patrol patrol : patrols) {
             if (patrol.getType().equals(type) || patrol.getType().equals("*")) {
-                String recurKey = patrol.getRoutingKey() + "." + object.getId();
-                retaskService.revokeAuthority(recurKey);
-                logger.info("Canceled {} for {} {}", patrol.getRoutingKey(), type, object.getId());
+                String recurKey = patrol.getRoutingKey() + "." + instance.getId();
+                retask.revokeAuthority(recurKey);
+                logger.info("Canceled patrol {} for {} {}", patrol.getRoutingKey(), type, instance.getId());
             }
         }
     }
+    
+    private class Patrol {
 
-    private class ParamProducer {
-        private final List<Param>  params;
+        private final String type;
+        private final String routingKey;
+        private final long interval;
+        private final TimeUnit unit;
+        private final PatrolParamProducer paramProducer;
+
+        protected Patrol(String type, String routingKey, long interval, TimeUnit unit, PatrolParamProducer paramProducer) {
+            this.type = type;
+            this.routingKey = routingKey;
+            this.interval = interval;
+            this.unit = unit;
+            this.paramProducer = paramProducer;
+        }
+
+        public String getType() {
+            return type;
+        }
+
+        public String getRoutingKey() {
+            return routingKey;
+        }
+
+        public long getInterval() {
+            return interval;
+        }
+        
+        public TimeUnit getUnit() {
+            return unit;
+        }
+        
+        private void prepareTaskParameters(Task task, RcObject instance) {
+        	paramProducer.prepareTaskParameters(task, instance);
+        }
+        
+    }
+        
+    private class PatrolParamProducer {
+        private final List<PatrolParam>  params;
         private final String[] paramNames;
         
-        protected ParamProducer(List<Param> params) {
+        private PatrolParamProducer(List<PatrolParam> params) {
             this.params = params;
-            this.paramNames = params.stream().map(Param::getName).collect(Collectors.toList()).toArray(new String[0]);
+            this.paramNames = params.stream().map(PatrolParam::getName).collect(Collectors.toList()).toArray(new String[0]);
         }
         
-        protected void prepareTaskParameters(Retask task, RedisObject obj) {
-            task.param("object", obj);
-            RedisValues values = obj.get(paramNames);
-            for (Param param : params) {
+        private void prepareTaskParameters(Task task, RcObject instance) {
+            task.param("instance", instance);
+            RcValues values = instance.get(paramNames);
+            for (PatrolParam param : params) {
                 task.param(param.getName(), values.next().as(param.getType()));
             }
         }
     }
 
-    private class Param {
+   private class PatrolParam {
 
-        private final Class<?> type;
+        private final JavaType type;
         private final String name;
 
-        public Param(Class<?> type, String name) {
+        private PatrolParam(String name, JavaType type) {
             super();
-            this.type = type;
             this.name = name;
+            this.type = type;
         }
         
-        public Class<?> getType() {
+        private JavaType getType() {
             return type;
         }
         
-        public String getName() {
+        private String getName() {
             return name;
         }
     }

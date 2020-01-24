@@ -5,10 +5,10 @@ import java.util.Map;
 
 public class DiscoveredArtifact {
 
-    private final String id;
-    private final String type;
-    private final String version;
-    private final Map<String, Object> props;
+    private String id;
+    private String type;
+    private String version;
+    private Map<String, Object> props;
 
     public DiscoveredArtifact(String type, String version) {
         this.type = type;
@@ -19,23 +19,41 @@ public class DiscoveredArtifact {
         this.props.put("version", version);
     }
 
-    public String getId() {
-        return id;
-    }
-
-    public String getType() {
-        return type;
-    }
-
-    public String getVersion() {
-        return version;
-    }
-
     public void addProp(String name, Object value) {
         this.props.put(name, value);
     }
 
-    protected Map<String, Object> getProps() {
+    public DiscoveredArtifact() { /* Reserved for Jackson */ }
+    
+    public String getId() {
+		return id;
+	}
+
+    public void setId(String id) {
+		this.id = id;
+	}
+
+    public String getType() {
+		return type;
+	}
+
+    public void setType(String type) {
+		this.type = type;
+	}
+
+    public String getVersion() {
+		return version;
+	}
+
+    public void setVersion(String version) {
+		this.version = version;
+	}
+
+    public void setProps(Map<String, Object> props) {
+		this.props = props;
+	}
+
+    public Map<String, Object> getProps() {
         return this.props;
     }
 

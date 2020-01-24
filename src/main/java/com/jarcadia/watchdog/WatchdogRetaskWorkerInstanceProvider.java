@@ -2,15 +2,15 @@ package com.jarcadia.watchdog;
 
 import java.util.concurrent.atomic.AtomicReference;
 
-import com.jarcadia.retask.RetaskWorkerInstanceProvider;
+import com.jarcadia.retask.RetaskContext;
 
-class WatchdogRetaskWorkerInstanceProvider implements RetaskWorkerInstanceProvider {
+class WatchdogRetaskWorkerInstanceProvider implements RetaskContext {
     
-    private final RetaskWorkerInstanceProvider delegate;
+    private final RetaskContext delegate;
     private final AtomicReference<DiscoveryWorker> discoveryWorker;
     private final AtomicReference<DeploymentWorker> deploymentWorker;
 
-    protected WatchdogRetaskWorkerInstanceProvider(RetaskWorkerInstanceProvider delegate) {
+    protected WatchdogRetaskWorkerInstanceProvider(RetaskContext delegate) {
         this.delegate = delegate;
         this.discoveryWorker = new AtomicReference<DiscoveryWorker>();
         this.deploymentWorker = new AtomicReference<DeploymentWorker>();

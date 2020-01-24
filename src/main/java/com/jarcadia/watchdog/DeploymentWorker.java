@@ -2,25 +2,26 @@ package com.jarcadia.watchdog;
 
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.jarcadia.rcommando.RedisCdl;
+import com.jarcadia.rcommando.RcCountDownLatch;
+import com.jarcadia.rcommando.RcObject;
+import com.jarcadia.rcommando.RcSet;
+import com.jarcadia.rcommando.RcValues;
 import com.jarcadia.rcommando.RedisCommando;
-import com.jarcadia.rcommando.RedisMap;
-import com.jarcadia.rcommando.RedisObject;
-import com.jarcadia.rcommando.RedisValue;
-import com.jarcadia.rcommando.RedisValues;
 import com.jarcadia.retask.Retask;
-import com.jarcadia.retask.RetaskService;
+import com.jarcadia.retask.Task;
+import com.jarcadia.retask.TaskBucket;
 import com.jarcadia.retask.annontations.RetaskChangeHandler;
 import com.jarcadia.retask.annontations.RetaskHandler;
 import com.jarcadia.retask.annontations.RetaskParam;
@@ -32,28 +33,25 @@ public class DeploymentWorker {
     private final Logger logger = LoggerFactory.getLogger(DeploymentWorker.class);
 
     private final RedisCommando rcommando;
-    private final RetaskService retaskService;
-    private final RedisMap instancesMap;
-    private final RedisMap deploymentsMap;
-    private final RedisMap artifactsMap;
-    private final RedisMap distributionsMap;
+//    private final RcSet deploymentsMap;
+//    private final RcSet distributionsMap;
 
-    protected DeploymentWorker(RedisCommando rcommando,
-            RetaskService retaskService) {
+    protected DeploymentWorker(RedisCommando rcommando) {
         this.rcommando = rcommando;
-        this.retaskService = retaskService;
-        this.instancesMap = rcommando.getMap("instances");
-        this.deploymentsMap = rcommando.getMap("deployments");
-        this.artifactsMap = rcommando.getMap("artifacts");
-        this.distributionsMap = rcommando.getMap("distributions");
     }
 
     @RetaskHandler("deploy")
-    public List<Retask> deploy(String artifactId, Set<String> instanceIds) {
+    public void deploy(Retask retask, 
+    		RcSet artifacts,
+    		RcSet instances,
+    		RcSet deployments,
+    		RcSet distributions,
+    		String artifactId,
+    		Set<String> instanceIds,
+    		TaskBucket bucket) {
+
         String cohortId = UUID.randomUUID().toString();
-        List<RedisObject> deployInstances = instanceIds.stream()
-                .map(id -> instancesMap.get(id))
-                .collect(Collectors.toList());
+        Set<RcObject> deployInstances = instances.getSubset(instanceIds);
 
         // Confirm all instances are the same type
         List<String> types = deployInstances.stream()
@@ -66,11 +64,11 @@ public class DeploymentWorker {
         String type = types.get(0);
 
         // Confirm the artifact exists and the type matches the instances' type
-        if (!artifactsMap.has(artifactId)) {
+        if (!artifacts.has(artifactId)) {
             throw new DeploymentException("Artifact with id " + artifactId + " does not exist");
         }
-        RedisObject artifact = artifactsMap.get(artifactId);
-        RedisValues artifactValues = artifact.get("type", "version");
+        RcObject artifact = artifacts.get(artifactId);
+        RcValues artifactValues = artifact.get("type", "version");
         String artifactType = artifactValues.next().asString();
         String artifactVersion = artifactValues.next().asString();
         if (!type.equals(artifactType)) {
@@ -83,7 +81,7 @@ public class DeploymentWorker {
                 "deploy.stop." + type, "deploy.upgrade." + type,
                 "deploy.start." + type, "deploy.enable." + type,
                 "deploy.distribute." + type, "deploy.cleanup." + type);
-        Set<String> missingRoutes = retaskService.verifyRoutes(expectedRoutes);
+        Set<String> missingRoutes = retask.verifyRecruits(expectedRoutes);
         if (!missingRoutes.isEmpty()) {
             throw new DeploymentException("Missing deployment routes: " + missingRoutes.toString());
         }
@@ -95,77 +93,73 @@ public class DeploymentWorker {
         }
 
         // Group the instances, according to their groupId or their ID if not part of a group
-        Map<String, List<RedisObject>> instancesByGroup = deployInstances.stream()
+        Map<String, List<RcObject>> instancesByGroup = deployInstances.stream()
                 .collect(Collectors.groupingBy(i -> i.get("group").isPresent() ? i.get("group").asString() : i.getId()));
 
         // Prepare the deployments
-        List<Retask> tasks = new LinkedList<>();
-        for (List<RedisObject> groupInstances : instancesByGroup.values()) {
-            RedisObject deployment = deploymentsMap.get(UUID.randomUUID().toString());
-            List<String> deploymentInstanceIds = groupInstances.stream().map(RedisObject::getId).collect(Collectors.toList());
-            deployment.checkedSet("type", type, "cohort", cohortId, "instances", deploymentInstanceIds, "remaining", deploymentInstanceIds);
-            Retask.create("deploy.advance").objParam(deployment).addTo(tasks);
+        for (List<RcObject> groupInstances : instancesByGroup.values()) {
+            RcObject deployment = deployments.get(UUID.randomUUID().toString());
+            deployment.checkedSet("type", type, "cohort", cohortId, "instances", groupInstances, "remaining", groupInstances);
+            Task.create("deploy.advance").param("deployment", deployment).dropIn(bucket);
 
-            for (RedisObject instance : groupInstances) {
-                instance.checkedSet("deploymentId", deployment.getId(), "deploymentState", DeployState.Waiting);
+            for (RcObject instance : groupInstances) {
+                instance.checkedSet("deployment", deployment, "deploymentState", DeployState.Waiting);
                 setAdd("deploy.pending", instance);
             }
         }
 
         // Group the deployment instances by host 
-        Map<String, List<RedisObject>> instancesByHost = deployInstances.stream()
+        Map<String, List<RcObject>> instancesByHost = deployInstances.stream()
                 .collect(Collectors.groupingBy(instance -> instance.get("host").asString()));
 
         // Create a distribution for each host
         for (String host : instancesByHost.keySet()) {
-            List<RedisObject> dependentInstances = instancesByHost.get(host);
-            List<String> dependentInstanceIds = dependentInstances.stream().map(RedisObject::getId).collect(Collectors.toList());
-            RedisObject distribution = distributionsMap.get(UUID.randomUUID().toString());
+            List<RcObject> dependentInstances = instancesByHost.get(host);
+            RcObject distribution = distributions.get(UUID.randomUUID().toString());
             distribution.checkedSet("state", DistributionState.PendingTransfer,
                     "type", type,
                     "host", host,
-                    "artifactId", artifact.getId(),
+                    "artifact", artifact,
                     "version", artifactVersion,
-                    "dependents", dependentInstanceIds);
+                    "dependents", dependentInstances);
 
-            Retask.create("deploy.distribute")
-                .objParam("distribution", distribution)
-                .objParam("artifact", artifact)
+            Task.create("deploy.distribute")
+                .param("distribution", distribution)
+                .param("artifact", artifact)
                 .param("host", host)
                 .param("type", type)
-                .addTo(tasks);
+                .dropIn(bucket);
 
             // Setup cleanup CDL for the distributions
             rcommando.getCdl(distribution.getId() + ".cleanup").init(dependentInstances.size());
 
-            // Set the distributionId for each instance
-            for (RedisObject instance : instancesByHost.get(host)) {
-                instance.checkedSet("distributionId", distribution.getId());
+            // Set the distribution for each instance
+            for (RcObject instance : instancesByHost.get(host)) {
+                instance.checkedSet("distribution", distribution);
             }
         }
-        return tasks;
     }
 
     @RetaskHandler("deploy.advance")
-    public Retask advanceDeployment(RedisObject deployment) {
-        List<RedisObject> remainingInstances = deployment.get("remaining").asObjectList(instancesMap);
+    public void advanceDeployment(RcObject deployment, TaskBucket bucket) {
+        List<RcObject> remainingInstances = deployment.get("remaining").asListOf(RcObject.class);
         if (remainingInstances.isEmpty()) {
             completedDeploymentHandler(deployment);
         } else if (remainingInstances.size() == 1) {
             remainingInstances.get(0).checkedSet("deploymentState", DeployState.Ready);
         } else {
             String type = deployment.get("type").asString();
-            return Retask.create("deploy.next." + type)
-                    .objParam("deployment", deployment)
-                    .param("remaining", remainingInstances.stream().map(RedisObject::getId).collect(Collectors.toList()));
+            Task.create("deploy.next." + type)
+                    .param("deployment", deployment)
+                    .param("remaining", remainingInstances)
+                    .dropIn(bucket);
         }
-        return null;
     }
     
-    private void completedDeploymentHandler(RedisObject deployment) {
+    private void completedDeploymentHandler(RcObject deployment) {
         // Update deploy state and remove instances from deploy.active
-        List<RedisObject> deploymentInstances = deployment.get("instances").asObjectList(instancesMap);
-        for (RedisObject instance : deploymentInstances) {
+        List<RcObject> deploymentInstances = deployment.get("instances").asListOf(RcObject.class);
+        for (RcObject instance : deploymentInstances) {
             instance.checkedClear("deploymentState");
             setRemove("deploy.active", instance);
         }
@@ -173,192 +167,178 @@ public class DeploymentWorker {
         logger.info("Completed deployment {}", deployment.getId());
     }
 
-    @RetaskChangeHandler(mapKey = "instances", field = "deploymentState")
-    public Object instanceDeployStateChanged(RedisObject instance, @RetaskParam("after") DeployState deployState) {
+    @RetaskChangeHandler(setKey = "instances", field = "deploymentState")
+    public void instanceDeployStateChanged(@RetaskParam("object") RcObject instance, @RetaskParam("after") DeployState deployState, TaskBucket bucket) {
         if (deployState != null) {
             switch (deployState) {
                 case Ready:
-                    return instanceIsReadyHandler(instance);
+                    instanceIsReadyHandler(instance, bucket);
+                    break;
                 case Upgraded:
-                    return instanceIsUpgradedHandler(instance);
-                default:
-                    return null;
+                    instanceIsUpgradedHandler(instance, bucket);
+                    break;
             }
-        } else {
-            return null;
         }
     }
 
-    private Retask instanceIsReadyHandler(RedisObject instance) {
+    private void instanceIsReadyHandler(RcObject instance, TaskBucket bucket) {
         if (setRemove("deploy.pending", instance)) {
             InstanceState state = instance.get("state").as(InstanceState.class);
             switch (state) {
                 case Draining:
                 case Enabled:
                     instance.checkedSet("deploymentState", DeployState.PendingDrain);
-                    return Retask.create("deploy.disable").objParam(instance);
+                    Task.create("deploy.disable").param("instance", instance).dropIn(bucket);
+                    break;
                 case Disabled:
                     instance.checkedSet("deploymentState", DeployState.PendingStop);
-                    return Retask.create("deploy.stop").objParam(instance);
+                    Task.create("deploy.stop").param("instance", instance).dropIn(bucket);
+                    break;
                 case Down:
-                    Optional<RedisObject> distribution = getDistribution(instance);
+                    Optional<RcObject> distribution = instance.get("distribution").asOptionalOf(RcObject.class);
                     if (distribution.isPresent()) {
-                        return instanceIsReadyForUpgradeHandler(instance, distribution.get());
+                        instanceIsReadyForUpgradeHandler(instance, distribution.get(), bucket);
                     } else {
                         instance.checkedSet("deploymentState", DeployState.PendingStart);
-                        return Retask.create("deploy.start").objParam(instance);
+                        Task.create("deploy.start").param("instance", instance).dropIn(bucket);
                     }
+                    break;
                 default:
                     logger.warn("Unexpected instance state {} for instance {}", state, instance.getId());
-                    return null;
             }
-        } else {
-            return null;
         }
     }
 
-    private List<Retask> instanceIsUpgradedHandler(RedisObject instance) {
+    private void instanceIsUpgradedHandler(RcObject instance, TaskBucket bucket) {
         if (setRemove("deploy.pending-upgrade", instance)) {
             logger.info("Successfully upgraded {}", instance.getId());
             instance.checkedSet("deploymentState", DeployState.PendingStart);
-            Retask startTask = Retask.create("deploy.start").objParam(instance);
-            Optional<RedisObject> distribution = getDistribution(instance);
+            Task.create("deploy.start").param("instance", instance).dropIn(bucket);
+            Optional<RcObject> distribution = instance.get("distribution").asOptionalOf(RcObject.class);
             if (distribution.isPresent()) {
-                String distributionId = distribution.get().getId();
-                RedisCdl cleanupCdl = rcommando.getCdl(distributionId + ".cleanup");
+                RcCountDownLatch cleanupCdl = rcommando.getCdl(distribution.get().getId() + ".cleanup");
                 if (cleanupCdl.decrement()) {
-                    logger.info("Cleaning up distribution {}", distributionId);
+                    logger.info("Cleaning up distribution {}", distribution.get().getId());
                     distribution.get().checkedSet("state", DistributionState.PendingCleanup);
-                    return startTask.and(Retask.create("deploy.cleanup")
-                            .objParam(distribution.get()));
+                    Task.create("deploy.cleanup").param("distribution", distribution.get()).dropIn(bucket);
                 }
             }
-            return startTask.asList();
-        } else {
-            return null;
         }
     }
 
-    @RetaskChangeHandler(mapKey = "instances", field = "state")
-    public Retask instanceStateChanged(RedisObject instance, @RetaskParam("after") InstanceState state) {
+    @RetaskChangeHandler(setKey = "instances", field = "state")
+    public void instanceStateChanged(@RetaskParam("object") RcObject instance, @RetaskParam("after") InstanceState state, TaskBucket bucket) {
         switch (state) {
             case Disabled:
-                return instanceIsDisabledHandler(instance);
+                instanceIsDisabledHandler(instance, bucket);
+                break;
             case Down:
-                return instanceIsDownHandler(instance);
+                instanceIsDownHandler(instance, bucket);
+                break;
             case Enabled:
-                return instanceIsEnabledHandler(instance);
-            default:
-                return null;
+                instanceIsEnabledHandler(instance, bucket);
+                break;
         }
     }
 
-    private Retask instanceIsDisabledHandler(RedisObject instance) {
+    private void instanceIsDisabledHandler(RcObject instance, TaskBucket bucket) {
         if (setRemove("deploy.pending-disable", instance)) {
             instance.checkedSet("deploymentState", DeployState.PendingStop);
-            return Retask.create("deploy.stop").objParam(instance);
+            Task.create("deploy.stop").param("instance", instance).dropIn(bucket);
         } else if (setRemove("deploy.pending-start", instance)) {
             instance.checkedSet("deploymentState", DeployState.PendingEnable);
-            return Retask.create("deploy.enable").objParam(instance);
-        } else {
-            return null;
+            Task.create("deploy.enable").param("instance", instance).dropIn(bucket);
         }
     }
 
-    private Retask instanceIsDownHandler(RedisObject instance) {
+    private void instanceIsDownHandler(RcObject instance, TaskBucket bucket) {
         if (setRemove("deploy.pending-stop", instance)) {
-            Optional<RedisObject> distribution = getDistribution(instance);
+            Optional<RcObject> distribution = instance.get("distribution").asOptionalOf(RcObject.class);
             if (distribution.isPresent()) {
-                return instanceIsReadyForUpgradeHandler(instance, distribution.get());
+                instanceIsReadyForUpgradeHandler(instance, distribution.get(), bucket);
             } else {
                 instance.checkedSet("deploymentState", DeployState.PendingStart);
-                return Retask.create("deploy.start").objParam(instance);
+                Task.create("deploy.start").param("instance", instance).dropIn(bucket);
             }
-        } else {
-            return null;
         }
     }
 
-    private Retask instanceIsEnabledHandler(RedisObject instance) {
+    private void instanceIsEnabledHandler(RcObject instance, TaskBucket bucket) {
         if (setRemove("deploy.pending-enable", instance)) {
-            String deploymentId = instance.get("deploymentId").asString();
-            logger.info("Completed instance {} in deployment {}", instance.getId(), deploymentId);
-            RedisObject deployment = deploymentsMap.get(deploymentId);
-            List<String> remaining = deployment.get("remaining").asListOf(String.class).stream()
-                    .filter(id -> !instance.getId().equals(id))
+            RcObject deployment = instance.get("deployment").as(RcObject.class);
+            logger.info("Completed instance {} in deployment {}", instance.getId(), deployment.getId());
+            List<RcObject> remaining = deployment.get("remaining").asListOf(RcObject.class).stream()
+                    .filter(i -> !instance.equals(i))
                     .collect(Collectors.toList());
             deployment.checkedSet("remaining", remaining);
-            return Retask.create("deploy.advance").objParam(deployment);
-        } else {
-            return null;
+            Task.create("deploy.advance").param("deployment", deployment).dropIn(bucket);
         }
     }
 
     @RetaskHandler("deploy.disable")
-    public Retask disable(RedisObject instance) throws Exception {
+    public Task disable(RcObject instance) {
         String type = instance.get("type").asString();
         instance.checkedSet("deploymentState", DeployState.Draining);
         logger.info("Draining {} ({})", instance.getId(), type);
         rcommando.core().sadd("deploy.pending-disable", instance.getId());
-        return Retask.create("deploy.drain." + type).objParam(instance);
+        return Task.create("deploy.drain." + type).param("instance", instance);
     }
 
     @RetaskHandler("deploy.stop")
-    public Retask stop(RedisObject instance) throws Exception {
+    public Task stop(RcObject instance) {
         String type = instance.get("type").asString();
         logger.info("Stopping {} ({})", instance.getId(), type);
         instance.checkedSet("deploymentState", DeployState.Stopping);
         rcommando.core().sadd("deploy.pending-stop", instance.getId());
-        return Retask.create("deploy.stop." + type).objParam(instance);
+        return Task.create("deploy.stop." + type).param("instance", instance);
     }
 
     @RetaskHandler("deploy.upgrade")
-    public Retask upgrade(RedisObject instance) {
-        RedisValues values = instance.get("type", "host", "distributionId");
+    public Task upgrade(RcObject instance) {
+        RcValues values = instance.get("type", "host", "distribution");
         String type = values.next().asString();
         String host = values.next().asString();
-        RedisObject distribution = values.next().asRedisObject(distributionsMap);
-        RedisObject artifact = distribution.get("artifactId").asRedisObject(artifactsMap);
+        RcObject distribution = values.next().as(RcObject.class);
+        RcObject artifact = distribution.get("artifact").as(RcObject.class);
         
         logger.info("Upgrading {} ({})", instance.getId(), type);
 
         rcommando.core().sadd("deploy.pending-upgrade", instance.getId());
         instance.checkedSet("deploymentState", DeployState.Upgrading);
-        return Retask.create("deploy.upgrade." + type)
+        return Task.create("deploy.upgrade." + type)
                 .param("host", host)
-                .objParam("instance", instance)
-                .objParam("distribution", distribution)
-                .objParam("artifact", artifact);
+                .param("instance", instance)
+                .param("distribution", distribution)
+                .param("artifact", artifact);
     }
 
     @RetaskHandler("deploy.start")
-    public Retask start(RedisObject instance) throws Exception {
+    public Task start(RcObject instance) throws Exception {
         String type = instance.get("type").asString();
         logger.info("Starting {} ({})", instance.getId(), type);
         instance.checkedSet("deploymentState", DeployState.Starting);
         rcommando.core().sadd("deploy.pending-start", instance.getId());
-        return Retask.create("deploy.start." + type).objParam(instance);
+        return Task.create("deploy.start." + type).param("instance", instance);
     }
 
     @RetaskHandler("deploy.enable")
-    public Retask enable(RedisObject instance) throws Exception {
+    public Task enable(RcObject instance) throws Exception {
         String type = instance.get("type").asString();
         logger.info("Enabling {} ({})", instance.getId(), type);
         instance.checkedSet("deploymentState", DeployState.Enabling);
         rcommando.core().sadd("deploy.pending-enable", instance.getId());
-        return Retask.create("deploy.enable." + type).objParam(instance);
+        return Task.create("deploy.enable." + type).param("instance", instance);
     }
 
     @RetaskHandler("deploy.online")
-    public Retask online(RedisObject instance) throws IOException {
-        String deploymentId = instance.get("deploymentId").asString();
-        RedisObject deployment = deploymentsMap.get(deploymentId);
-        List<String> remaining = deployment.get("remaining").asListOf(String.class).stream()
-                .filter(id -> !instance.getId().equals(id))
+    public Task online(RcObject instance) throws IOException {
+        RcObject deployment = instance.get("deployment").as(RcObject.class);
+        List<RcObject> remaining = deployment.get("remaining").asListOf(RcObject.class).stream()
+                .filter(i -> !instance.equals(i))
                 .collect(Collectors.toList());
         deployment.checkedSet("remaining", remaining);
-        logger.info("Completed instance {} in deployment {}", instance.getId(), deploymentId);
-        return Retask.create("deploy.advance").objParam(deployment);
+        logger.info("Completed instance {} in deployment {}", instance.getId(), deployment.getId());
+        return Task.create("deploy.advance").param("deployment", deployment);
     }
 
     /*
@@ -372,7 +352,7 @@ public class DeploymentWorker {
      * 
      * The redis pending-distribution set is used in both cases to help ensure that the race condition cannot cause both methods to occur
      */
-    private Retask instanceIsReadyForUpgradeHandler(RedisObject instance, RedisObject distribution) {
+    private void instanceIsReadyForUpgradeHandler(RcObject instance, RcObject distribution, TaskBucket bucket) {
         logger.info("Checking state of distribution {} before upgrading on {}", distribution.getId(), instance.getId());
         rcommando.core().sadd("deploy.pending-distribution", instance.getId());
 
@@ -381,76 +361,61 @@ public class DeploymentWorker {
             if (rcommando.core().srem("deploy.pending-distribution", instance.getId()) == 1) {
                 logger.info("Distribution was complete, upgrading instance");
                 instance.checkedSet("deploymentState", DeployState.PendingUpgrade);
-                return Retask.create("deploy.upgrade").objParam(instance);
+                Task.create("deploy.upgrade").param("instance", instance).dropIn(bucket);
             } else {
                 logger.warn("Unlikely race condition occurred on instance {}, instance is expected to have been advanced by distribution {} state -> Verified",
                         instance.getId(), distribution.getId());
-                return null;
             }
         } else {
             // Distribution is not complete, set instance to PendingDistribution
             logger.info("Waiting for distribution {} to complete before advancing {}", distribution.getId(), instance.getId());
             instance.checkedSet("deploymentState", DeployState.PendingDistribution);
-            return null;
         }
     }
 
-    @RetaskChangeHandler(mapKey = "distributions", field = "state")
-    public List<Retask> distributionStateChange(RedisObject distribution, DistributionState state) {
-        logger.info("Distribution state change for {} -> {}", distribution.getId(), state);
-        if (state == DistributionState.Transferred) {
-            Set<String> dependentInstanceIds = distribution.get("dependents").asSetOf(String.class);
-            return dependentInstanceIds.stream()
-                    .filter(id -> rcommando.core().srem("deploy.pending-distribution", id) == 1)
-                    .map(id -> Retask.create("deploy.upgrade").objParam("instances", id))
-                    .collect(Collectors.toList());
-        } else if (state == DistributionState.CleanedUp) {
+    @RetaskChangeHandler(setKey = "distributions", field = "state")
+    public void distributionStateChange(@RetaskParam("object") RcObject distribution, DistributionState after, TaskBucket bucket) {
+        logger.info("Distribution state change for {} -> {}", distribution.getId(), after);
+        if (after == DistributionState.Transferred) {
+            Set<RcObject> dependentInstances = distribution.get("dependents").asSetOf(RcObject.class);
+            dependentInstances.stream()
+                    .filter(depInst -> rcommando.core().srem("deploy.pending-distribution", depInst.getId()) == 1)
+                    .map(depInst -> Task.create("deploy.upgrade").param("instance", depInst))
+                    .forEach(task -> task.dropIn(bucket));
+        } else if (after == DistributionState.CleanedUp) {
             distribution.checkedDelete();
-            return null;
-        } else {
-            return null;
         }
     }
 
     @RetaskHandler(value = "deploy.distribute")
-    public Retask distribute(String type, String host, RedisObject distribution, RedisObject artifact) {
+    public Task distribute(String type, String host, RcObject distribution, RcObject artifact) {
         logger.info("Distributing artifact {} ({}) to {} for distribution {}", type, artifact.getId(), host, distribution.getId());
         distribution.checkedSet("state", DistributionState.Transferring);
-        return Retask.create("deploy.distribute." + type)
+        return Task.create("deploy.distribute." + type)
                 .param("host", host)
-                .objParam("distribution", distribution)
-                .objParam("artifact", artifact);
+                .param("distribution", distribution)
+                .param("artifact", artifact);
     }
 
     @RetaskHandler("deploy.cleanup")
-    public Retask cleanup(RedisObject distribution) {
-        RedisValues values = distribution.get("type", "host", "artifactId");
+    public Task cleanup(RcObject distribution) {
+        RcValues values = distribution.get("type", "host", "artifact");
         String type = values.next().asString();
         String host = values.next().asString();
-        RedisObject artifact = values.next().asRedisObject(artifactsMap);
+        RcObject artifact = values.next().as(RcObject.class);
         logger.info("Cleaning up {} {} on {} for distribution {}", type, artifact.getId(), host, distribution.getId());
         distribution.checkedSet("state", DistributionState.PendingCleanup);
-        return Retask.create("deploy.cleanup." + type)
+        return Task.create("deploy.cleanup." + type)
                 .param("host", host)
-                .objParam("distribution", distribution)
-                .objParam("artifact", artifact);
+                .param("distribution", distribution)
+                .param("artifact", artifact);
     }
 
-    private Optional<RedisObject> getDistribution(RedisObject instance) {
-        RedisValue distributionId = instance.get("distributionId");
-        if (distributionId.isPresent()) {
-            return Optional.of(distributionId.asRedisObject(distributionsMap));
-        } else {
-            return Optional.empty();
-        }
-    }
-
-    private void setAdd(String set, RedisObject instance) {
+    private void setAdd(String set, RcObject instance) {
         rcommando.core().sadd(set, instance.getId());
     }
 
-    private boolean setRemove(String set, RedisObject instance) {
+    private boolean setRemove(String set, RcObject instance) {
         return rcommando.core().srem(set, instance.getId()) == 1;
     }
-
 }

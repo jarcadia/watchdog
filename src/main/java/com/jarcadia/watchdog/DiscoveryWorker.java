@@ -1,7 +1,7 @@
 package com.jarcadia.watchdog;
 
 import java.util.ArrayList;
-import java.util.Collection;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -10,14 +10,20 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.jarcadia.rcommando.CheckedSetMultiFieldResult;
-import com.jarcadia.rcommando.RedisMap;
-import com.jarcadia.rcommando.RedisObject;
+import com.jarcadia.rcommando.RcObject;
+import com.jarcadia.rcommando.RcSet;
 import com.jarcadia.retask.Retask;
+import com.jarcadia.retask.Task;
 import com.jarcadia.retask.annontations.RetaskHandler;
 import com.jarcadia.retask.annontations.RetaskWorker;
 
@@ -26,23 +32,37 @@ public class DiscoveryWorker {
     
     private final Logger logger = LoggerFactory.getLogger(DiscoveryWorker.class);
 
-    private final DiscoveryAgent agent;
     private final PatrolDispatcher dispatcher;
 
-    protected DiscoveryWorker(DiscoveryAgent agent, PatrolDispatcher dispatcher) {
-        this.agent = agent;
+    protected DiscoveryWorker(PatrolDispatcher dispatcher) {
         this.dispatcher = dispatcher;
     }
 
     @RetaskHandler("discover.artifacts")
-    public void discoverArtifacts(RedisMap artifacts) {
+    public void discoverArtifacts(Retask retask, RcSet artifacts) {
         logger.info("Starting artifact discovery");
         String discoveryId = UUID.randomUUID().toString();
         
-        Set<DiscoveredArtifact> discoveredArtifacts = agent.discoverArtifacts();
+        // Ensure agent implementation is ready
+        Set<String> missingRoutes = retask.verifyRecruits(Arrays.asList("discover.impl.artifacts"));
+        if (!missingRoutes.isEmpty()) {
+        	logger.warn("Missing discover.agent.artifacts handler, cannot discover artifacts");
+        	throw new DiscoveryException("Undefined implementation for artifact discovery route " + missingRoutes.toString());
+        }
+        TypeReference<Set<DiscoveredArtifact>> typeRef = new TypeReference<Set<DiscoveredArtifact>>() { };
+        Task agentTask = Task.create("discover.impl.artifacts");
+        Future<Set<DiscoveredArtifact>> future = retask.call(agentTask, typeRef);
+        
+        Set<DiscoveredArtifact> discoveredArtifacts = null;
+		try {
+			discoveredArtifacts = future.get();
+		} catch (InterruptedException | ExecutionException e) {
+			throw new DiscoveryException("Unexpected exception while discovering artifacts", e);
+		}
+
         DiscoveryResultsMap artifactResults = new DiscoveryResultsMap();
         for (DiscoveredArtifact discovered : discoveredArtifacts) {
-            RedisObject artifact = artifacts.get(discovered.getId());
+            RcObject artifact = artifacts.get(discovered.getId());
             Optional<CheckedSetMultiFieldResult> result = artifact.checkedSet(discovered.getProps());
             if (result.isPresent()) {
                 if (result.get().isInsert()) {
@@ -58,10 +78,9 @@ public class DiscoveryWorker {
         }
 
         // Remove stale instances
-        for (RedisObject instance : artifacts) {
+        for (RcObject instance : artifacts) {
             String type = instance.get("type").asString();
             if (!discoveryId.equals(instance.get("discoveryId").asString())) {
-                dispatcher.cancelPatrolsFor(type, instance);
                 instance.checkedDelete();
                 artifactResults.markRemoved(type);
             }
@@ -75,20 +94,34 @@ public class DiscoveryWorker {
     }
 
     @RetaskHandler("discover.instances")
-    public void discover(RedisMap instances, RedisMap groups) throws Exception {
-        
+    public void discover(Retask retask, RcSet instances, RcSet groups) {
         logger.info("Starting instance discovery");
         String discoveryId = UUID.randomUUID().toString();
         
+        Set<String> missingRoutes = retask.verifyRecruits(List.of("discover.impl.instances", "discover.impl.groups"));
+        if (!missingRoutes.isEmpty()) {
+        	logger.warn("Missing discovery implementation tasks {} cannot discover artifacts", missingRoutes);
+        	throw new DiscoveryException("Undefined implementation for instance discovery routes: " + missingRoutes.toString());
+        }
+
         // TODO add atomic boolean lock to only discover one at a time
         
-        Collection<DiscoveredInstance> discoveredInstances = agent.discoverInstances();
-        Map<String, List<RedisObject>> instancesByType = new HashMap<>();
+        TypeReference<List<DiscoveredInstance>> ref = new TypeReference<List<DiscoveredInstance>>() { };
+        Future<List<DiscoveredInstance>> futureInstances = retask.call(Task.create("discover.impl.instances"), ref);
+
+        List<DiscoveredInstance> discoveredInstances;
+		try {
+			discoveredInstances = futureInstances.get();
+		} catch (InterruptedException | ExecutionException ex) {
+			throw new DiscoveryException("Unexpected exception while discovering instances", ex);
+		}
+        
+        Map<String, List<RcObject>> instancesByType = new HashMap<>();
         DiscoveryResultsMap instanceResults = new DiscoveryResultsMap();
 
         // Process discovered instances
         for (DiscoveredInstance discovered : discoveredInstances) {
-            RedisObject instance = instances.get(discovered.getId());
+            RcObject instance = instances.get(discovered.getId());
             Optional<CheckedSetMultiFieldResult> result = instance.checkedSet(discovered.getProps());
             if (result.isPresent()) {
                 if (result.get().isInsert()) {
@@ -96,7 +129,7 @@ public class DiscoveryWorker {
                 } else {
                     instanceResults.markModified(discovered.getType());
                 }
-                dispatcher.dispatchPatrolsFor(discovered.getType(), instance);
+                dispatcher.dispatchPatrolsFor(retask, discovered.getType(), instance);
             } else {
                 instanceResults.markExisting(discovered.getType());
             }
@@ -106,25 +139,38 @@ public class DiscoveryWorker {
         }
 
         // Remove stale instances
-        for (RedisObject instance : instances) {
+        for (RcObject instance : instances) {
             String type = instance.get("type").asString();
             if (!discoveryId.equals(instance.get("discoveryId").asString())) {
-                dispatcher.cancelPatrolsFor(type, instance);
+                dispatcher.cancelPatrolsFor(retask, type, instance);
                 instance.checkedDelete();
                 instanceResults.markRemoved(type);
             }
         }
 
-        // Discover groups based on discovered instances
+        // Create group discovery futures
+        TypeReference<List<DiscoveredGroup>> listOfGroupsTypeRef = new TypeReference<List<DiscoveredGroup>>() { };
+        List<Future<List<DiscoveredGroup>>> groupDiscoveryTasks = instancesByType.entrySet().stream()
+        		.map(e -> Task.create("discover.impl.groups")
+        				.param("type", e.getKey())
+        				.param("instances", e.getValue()))
+        		.map(task -> retask.call(task, listOfGroupsTypeRef))
+        		.collect(Collectors.toList());
+        
+        // Combine DiscoveredGroups returned by implementation tasks
         List<DiscoveredGroup> discoveredGroups = new ArrayList<DiscoveredGroup>();
-        for (Entry<String, List<RedisObject>> entry : instancesByType.entrySet()) {
-            discoveredGroups.addAll(agent.groupInstances(entry.getKey(), entry.getValue()));
+        for (Future<List<DiscoveredGroup>> futureDiscoveredGroups : groupDiscoveryTasks) {
+            try {
+				discoveredGroups.addAll(futureDiscoveredGroups.get());
+			} catch (InterruptedException | ExecutionException ex) {
+				throw new DiscoveryException("Unexpected exception while grouping instances", ex);
+			}
         }
 
         DiscoveryResultsMap groupResults = new DiscoveryResultsMap();
         // Process discovered groups
         for (DiscoveredGroup discovered : discoveredGroups) {
-            RedisObject group = groups.get(discovered.getId());
+        	RcObject group = groups.get(discovered.getId());
             
             Optional<CheckedSetMultiFieldResult> result = group.checkedSet(discovered.getProps());
             if (result.isPresent()) {
@@ -142,7 +188,7 @@ public class DiscoveryWorker {
         }
 
         // Remove stale groups
-        for (RedisObject group : groups) {
+        for (RcObject group : groups) {
             if (!discoveryId.equals(group.get("discoveryId").asString())) {
                 String type = group.get("type").asString();
                 groupResults.markRemoved(type);
@@ -152,7 +198,7 @@ public class DiscoveryWorker {
         }
 
         // Set group in each instance that is part of a group
-        for (RedisObject group : groups) {
+        for (RcObject group : groups) {
             List<String> groupInstanceIds = group.get("instances").asListOf(String.class);
             for (String instanceId : groupInstanceIds) {
                 instances.get(instanceId).checkedSet("group", group.getId());
