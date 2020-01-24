@@ -22,7 +22,7 @@ import com.jarcadia.rcommando.RcObject;
 import com.jarcadia.rcommando.RcSet;
 import com.jarcadia.rcommando.RedisCommando;
 import com.jarcadia.retask.Retask;
-import com.jarcadia.retask.RetaskContext;
+import com.jarcadia.retask.InstanceProvider;
 import com.jarcadia.retask.RetaskManager;
 import com.jarcadia.retask.RetaskRecruiter;
 import com.jarcadia.retask.Task;
@@ -44,6 +44,8 @@ public class DeployServiceUnitTest {
     @Test
     public void testSingleInstanceDeployment() throws Exception {
     	RedisClient redisClient = RedisClient.create("redis://localhost/13");
+    	
+    	
     	RetaskRecruiter recruiter = new RetaskRecruiter();
         recruiter.recruitFromClass(DeploymentWorker.class);
         recruiter.recruitFromClass(StateRecorder.class);
@@ -51,8 +53,7 @@ public class DeployServiceUnitTest {
 
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
-        LazyInstanceProvider provider = new LazyInstanceProvider();
-        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter, provider);
+        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter);
 
         // Setup instances
         RcSet instances = rcommando.getSetOf("instances");
@@ -64,15 +65,15 @@ public class DeployServiceUnitTest {
         
         // Setup test Deployment implementation
         TestDeploymentImpl testDeployImpl = Mockito.spy(new TestDeploymentImpl());
-        provider.set(TestDeploymentImpl.class, testDeployImpl);
+        manager.addInstance(TestDeploymentImpl.class, testDeployImpl);
 
         // Setup DeploymentStateRecorder for assertions
         StateRecorder deployStateRecorder = new StateRecorder(rcommando);
-        provider.set(StateRecorder.class, deployStateRecorder);
+        manager.addInstance(StateRecorder.class, deployStateRecorder);
 
         // Create DeployWorker under test
         DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando);
-        provider.set(DeploymentWorker.class, deploymentWorker);
+        manager.addInstance(DeploymentWorker.class, deploymentWorker);
 
         // Start retask and submit deploy task 
         manager.start(Task.create("deploy")
@@ -103,8 +104,7 @@ public class DeployServiceUnitTest {
         
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
-        LazyInstanceProvider provider = new LazyInstanceProvider();
-        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter, provider);
+        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter);
 
         // Setup instances
         RcSet instances = rcommando.getSetOf("instances");
@@ -121,15 +121,15 @@ public class DeployServiceUnitTest {
 
         // Setup spied test Deployment implementation
         TestDeploymentImpl deploymentImpl = Mockito.spy(new TestDeploymentImpl());
-        provider.set(TestDeploymentImpl.class, deploymentImpl);
+        manager.addInstance(TestDeploymentImpl.class, deploymentImpl);
 
         // Setup test StateRecorder for assertions
         StateRecorder stateRecorder = new StateRecorder(rcommando);
-        provider.set(StateRecorder.class, stateRecorder);
+        manager.addInstance(StateRecorder.class, stateRecorder);
 
         // Create DeployWorker under test
         DeploymentWorker deployWorker = new DeploymentWorker(rcommando);
-        provider.set(DeploymentWorker.class, deployWorker);
+        manager.addInstance(DeploymentWorker.class, deployWorker);
 
         // Submit task to start deployment
         manager.start(Task.create("deploy")
@@ -163,8 +163,7 @@ public class DeployServiceUnitTest {
         
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
-        LazyInstanceProvider provider = new LazyInstanceProvider();
-        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter, provider);
+        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter);
         
         // Setup instances and groups
         int numGroups = 50;
@@ -191,15 +190,16 @@ public class DeployServiceUnitTest {
 
         // Setup spied TestDeploymentWorker 
         TestDeploymentImpl testDeploymentWorker = Mockito.spy(new TestDeploymentImpl());
-        provider.set(TestDeploymentImpl.class, testDeploymentWorker);
 
         // Setup DeploymentStateRecorder for assertions
         StateRecorder deployStateRecorder = new StateRecorder(rcommando);
-        provider.set(StateRecorder.class, deployStateRecorder);
 
         // Create Deploy Service for test
         DeploymentWorker deployService = new DeploymentWorker(rcommando);
-        provider.set(DeploymentWorker.class, deployService);
+
+        manager.addInstance(TestDeploymentImpl.class, testDeploymentWorker);
+        manager.addInstance(StateRecorder.class, deployStateRecorder);
+        manager.addInstance(DeploymentWorker.class, deployService);
 
         // Submit task to start deployment
         manager.start(Task.create("deploy")
@@ -334,24 +334,6 @@ public class DeployServiceUnitTest {
 
         private String key(String id) {
         	return "recorder." + guid + "." + id;
-        }
-    }
-
-    static class LazyInstanceProvider implements RetaskContext {
-
-        final Map<Class<?>, Object> map;
-        
-        public LazyInstanceProvider() {
-            map = new HashMap<>();
-        }
-        
-        public void set(Class<?> clazz, Object object) {
-            map.put(clazz, object);
-        }
-
-        @Override
-        public Object getInstance(Class<?> clazz) {
-            return map.get(clazz);
         }
     }
 }

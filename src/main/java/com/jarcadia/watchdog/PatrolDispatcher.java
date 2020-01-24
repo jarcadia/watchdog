@@ -25,9 +25,7 @@ class PatrolDispatcher {
 
     private final List<Patrol> patrols;
 
-    protected PatrolDispatcher(Retask retask, ObjectMapper objectMapper) {
-
-        List<HandlerMethod<WatchdogPatrol>> patrolHandlers = retask.getRecruitsByAnnontation(WatchdogPatrol.class);
+    protected PatrolDispatcher(ObjectMapper objectMapper, List<HandlerMethod<WatchdogPatrol>> patrolHandlers) {
         List<Patrol> list = new LinkedList<>();
         for (HandlerMethod<WatchdogPatrol> handler : patrolHandlers) {
         	WatchdogPatrol annontation = handler.getAnnontation();
@@ -43,7 +41,7 @@ class PatrolDispatcher {
         this.patrols = List.copyOf(list);
     }
 
-    public void dispatchPatrolsFor(Retask retask, String type, RcObject instance) {
+    protected void dispatchPatrolsFor(Retask retask, String type, RcObject instance) {
         for (Patrol patrol : patrols) {
             if (patrol.getType().equals(type) || patrol.getType().equals("*")) {
                 String recurKey = patrol.getRoutingKey() + "." + instance.getId();
@@ -58,7 +56,7 @@ class PatrolDispatcher {
         }
     }
 
-    public void cancelPatrolsFor(Retask retask, String type, RcObject instance) {
+    protected void cancelPatrolsFor(Retask retask, String type, RcObject instance) {
         for (Patrol patrol : patrols) {
             if (patrol.getType().equals(type) || patrol.getType().equals("*")) {
                 String recurKey = patrol.getRoutingKey() + "." + instance.getId();
