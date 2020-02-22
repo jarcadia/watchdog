@@ -2,9 +2,7 @@ package com.jarcadia.watchdog;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -18,11 +16,10 @@ import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.jarcadia.rcommando.RcObject;
-import com.jarcadia.rcommando.RcSet;
+import com.jarcadia.rcommando.Dao;
+import com.jarcadia.rcommando.DaoSet;
 import com.jarcadia.rcommando.RedisCommando;
 import com.jarcadia.retask.Retask;
-import com.jarcadia.retask.InstanceProvider;
 import com.jarcadia.retask.RetaskManager;
 import com.jarcadia.retask.RetaskRecruiter;
 import com.jarcadia.retask.Task;
@@ -32,6 +29,10 @@ import com.jarcadia.retask.annontations.RetaskHandler;
 import com.jarcadia.retask.annontations.RetaskInsertHandler;
 import com.jarcadia.retask.annontations.RetaskParam;
 import com.jarcadia.retask.annontations.RetaskWorker;
+import com.jarcadia.watchdog.States.DistributionState;
+import com.jarcadia.watchdog.States.InstanceState;
+import com.jarcadia.watchdog.model.Artifact;
+import com.jarcadia.watchdog.model.Group;
 
 import io.lettuce.core.RedisClient;
 import io.netty.util.internal.ThreadLocalRandom;
@@ -41,27 +42,32 @@ public class DeployServiceUnitTest {
 
     private final Logger logger = LoggerFactory.getLogger(DeployServiceUnitTest.class);
     
-    @Test
-    public void testSingleInstanceDeployment() throws Exception {
-    	RedisClient redisClient = RedisClient.create("redis://localhost/13");
-    	
-    	
+    
+    private RetaskRecruiter recruiter() {
     	RetaskRecruiter recruiter = new RetaskRecruiter();
         recruiter.recruitFromClass(DeploymentWorker.class);
-        recruiter.recruitFromClass(StateRecorder.class);
-        recruiter.recruitFromClass(TestDeploymentImpl.class);
-
+        recruiter.recruitFromClass(DeployServiceUnitTest.class);
+//        recruiter.recruitFromPackage("com.jarcadia.watchdog.model");
+        recruiter.recruitFromClass(Group.class); // Group is referenced only indirectly, must be included explicitly
+        recruiter.recruitFromClass(Artifact.class); // Artifact is referenced only indirectly, must be included explicitly
+        return recruiter;
+    }
+    
+    @Test
+    public void testSingleInsanceDeployment() throws Exception {
+    	RedisClient redisClient = RedisClient.create("redis://localhost:6379/13");
+    	
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
-        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter);
+        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
 
         // Setup instances
-        RcSet instances = rcommando.getSetOf("instances");
-        instances.get("inst").set("type", "webserver", "group", "group", "host", "web01", "port", 8080, "state", InstanceState.Enabled);
+        DaoSet instances = rcommando.getSetOf("instance");
+        instances.get("inst").set("app", "webserver", "group", "group:group", "host", "web01", "port", 8080, "state", InstanceState.Enabled);
         
         // Setup artifact
-        RcObject artifact = rcommando.getSetOf("artifacts").get("webserver_1.0");
-        artifact.checkedSet("type", "webserver", "version", "1.0");
+        Dao artifact = rcommando.getSetOf("artifact").get("webserver_1.0");
+        artifact.set("app", "webserver", "version", "1.0");
         
         // Setup test Deployment implementation
         TestDeploymentImpl testDeployImpl = Mockito.spy(new TestDeploymentImpl());
@@ -77,18 +83,17 @@ public class DeployServiceUnitTest {
 
         // Start retask and submit deploy task 
         manager.start(Task.create("deploy")
-                    .param("instanceIds", Arrays.asList("inst"))
-                    .param("artifactId", "webserver_1.0"));
+                    .param("instances", List.of("instance:inst"))
+                    .param("artifact", "artifact:webserver_1.0"));
 
         // Wait for the deployment to complete
         deployStateRecorder.awaitCompletion(1, TimeUnit.SECONDS);
 
         // Verify the instances deploy states progressed as expected
-        System.out.println( deployStateRecorder.getStates("inst"));
         Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates("inst"));
 
         // Verify the deployment agent spy callbacks were invoked in order
-        verifyDeployAgent(testDeployImpl, "instances", "inst", artifact);
+        verifyDeployAgent(testDeployImpl, rcommando.getSetOf("instance").get("inst"), artifact);
 
         // Shutdown retask
         manager.shutdown(1, TimeUnit.SECONDS);
@@ -97,27 +102,22 @@ public class DeployServiceUnitTest {
     @Test
     public void testTwoInstanceDeployment() throws Exception {
     	RedisClient redisClient = RedisClient.create("redis://localhost/14");
-    	RetaskRecruiter recruiter = new RetaskRecruiter();
-        recruiter.recruitFromClass(DeploymentWorker.class);
-        recruiter.recruitFromClass(StateRecorder.class);
-        recruiter.recruitFromClass(TestDeploymentImpl.class);
-        
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
-        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter);
+        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
 
         // Setup instances
-        RcSet instances = rcommando.getSetOf("instances");
-        instances.get("inst1").set("type", "webserver", "group", "group", "host", "web01", "port", 8080, "state", InstanceState.Enabled);
-        instances.get("inst2").set("type", "webserver", "group", "group", "host", "web02", "port", 8080, "state", InstanceState.Enabled);
+        DaoSet instances = rcommando.getSetOf("instance");
+        instances.get("inst1").set("app", "webserver", "group", "group:group", "host", "web01", "port", 8080, "state", InstanceState.Enabled);
+        instances.get("inst2").set("app", "webserver", "group", "group:group", "host", "web02", "port", 8080, "state", InstanceState.Enabled);
         
         // Setup groups
-        RcSet groups = rcommando.getSetOf("groups");
+        DaoSet groups = rcommando.getSetOf("group");
         groups.get("group").set("instances", Arrays.asList("inst1", "inst2"));
 
         // Setup artifact
-        RcObject artifact = rcommando.getSetOf("artifacts").get("webserver_1.0");
-        artifact.checkedSet("type", "webserver", "version", "1.0");
+        Dao artifact = rcommando.getSetOf("artifact").get("webserver_1.0");
+        artifact.set("app", "webserver", "version", "1.0");
 
         // Setup spied test Deployment implementation
         TestDeploymentImpl deploymentImpl = Mockito.spy(new TestDeploymentImpl());
@@ -133,20 +133,19 @@ public class DeployServiceUnitTest {
 
         // Submit task to start deployment
         manager.start(Task.create("deploy")
-                .param("instanceIds",  Arrays.asList("inst1", "inst2"))
-                .param("artifactId", "webserver_1.0"));
+                .param("instances",  Arrays.asList("instance:inst1", "instance:inst2"))
+                .param("artifact", "artifact:webserver_1.0"));
 
         // Wait for the deployment to complete
         stateRecorder.awaitCompletion(1, TimeUnit.SECONDS);
 
         // Verify the instances deploy states progressed as expected
-        System.out.println(stateRecorder.getStates("inst1"));
         Assertions.assertIterableEquals(expectedDeployStates(), stateRecorder.getStates("inst1"));
         Assertions.assertIterableEquals(expectedDeployStates(), stateRecorder.getStates("inst2"));
 
         // Verify the deployment agent spy callbacks were invoked in order
-        verifyDeployAgent(deploymentImpl, "instances", "inst1", artifact);
-        verifyDeployAgent(deploymentImpl, "instances", "inst2", artifact);
+        verifyDeployAgent(deploymentImpl, rcommando.getSetOf("instance").get("inst1"), artifact);
+        verifyDeployAgent(deploymentImpl, rcommando.getSetOf("instance").get("inst2"), artifact);
 
         // Shutdown retask
         manager.shutdown(1, TimeUnit.SECONDS);
@@ -155,38 +154,35 @@ public class DeployServiceUnitTest {
     @Test
     public void testLargeMultiDeployment() throws Exception {
     	RedisClient redisClient = RedisClient.create("redis://localhost/15");
-    	RetaskRecruiter recruiter = new RetaskRecruiter();
-        recruiter.recruitFromClass(DeploymentWorker.class);
-        recruiter.recruitFromClass(StateRecorder.class);
-        recruiter.recruitFromClass(TestDeploymentImpl.class);
-        
-        
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
-        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter);
+        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
         
         // Setup instances and groups
         int numGroups = 50;
         String[][] hosts = {{"web01", "web02"}, {"web03", "web04"}, {"web05", "web06"}, {"web07", "web08"}};
-        RcSet instances = rcommando.getSetOf("instances");
-        RcSet groups = rcommando.getSetOf("groups");
-        List<String> instanceIds = new ArrayList<>();
+        DaoSet instanceSet = rcommando.getSetOf("instance");
+        DaoSet groups = rcommando.getSetOf("group");
+        List<Dao> instances = new ArrayList<>();
         for (int i=0; i<numGroups; i++) {
             String groupId = "group" + i;
             String inst1Id = groupId + "-" + "inst1";
             String inst2Id = groupId + "-" + "inst2";
 
-            instanceIds.add(inst1Id);
-            instanceIds.add(inst2Id);
             String[] groupHosts = hosts[ThreadLocalRandom.current().nextInt(hosts.length)];
-            instances.get(inst1Id).set("type", "webserver", "group", groupId, "host", groupHosts[0], "port", 8080 + i, "state", InstanceState.Enabled);
-            instances.get(inst2Id).set("type", "webserver", "group", groupId, "host", groupHosts[1], "port", 8080 + i, "state", InstanceState.Enabled);
-            groups.get(groupId).set("instances", Arrays.asList(inst1Id, inst2Id));
+            Dao inst1 = instanceSet.get(inst1Id);
+            inst1.set("app", "webserver", "group", "group:" + groupId, "host", groupHosts[0], "port", 8080 + i, "state", InstanceState.Enabled);
+            Dao inst2 = instanceSet.get(inst2Id);
+            inst2.set("app", "webserver", "group", "group:" + groupId, "host", groupHosts[1], "port", 8080 + i, "state", InstanceState.Enabled);
+            groups.get(groupId).set("instances", Arrays.asList(inst1, inst2));
+
+            instances.add(inst1);
+            instances.add(inst2);
         }
 
         // Setup mocked artifact
-        RcObject artifact = rcommando.getSetOf("artifacts").get("webserver_1.0");
-        artifact.checkedSet("type", "webserver", "version", "1.0");
+        Dao artifact = rcommando.getSetOf("artifact").get("webserver_1.0");
+        artifact.set("app", "webserver", "version", "1.0");
 
         // Setup spied TestDeploymentWorker 
         TestDeploymentImpl testDeploymentWorker = Mockito.spy(new TestDeploymentImpl());
@@ -203,15 +199,15 @@ public class DeployServiceUnitTest {
 
         // Submit task to start deployment
         manager.start(Task.create("deploy")
-                .param("instanceIds",  instanceIds)
-                .param("artifactId", "webserver_1.0"));
+                .param("instances",  instances)
+                .param("artifact", "artifact:webserver_1.0"));
 
         // Wait for the deployment to complete
         deployStateRecorder.awaitCompletion(10, TimeUnit.SECONDS);
 
-        for (String instanceId : instanceIds) {
-            Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates(instanceId));
-            verifyDeployAgent(testDeploymentWorker, "instances", instanceId, artifact);
+        for (Dao instance : instances) {
+            Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates(instance.getId()));
+            verifyDeployAgent(testDeploymentWorker, instance, artifact);
         }
         manager.shutdown(1, TimeUnit.SECONDS);
     }
@@ -225,9 +221,8 @@ public class DeployServiceUnitTest {
                 DeployState.PendingEnable, DeployState.Enabling, null);
     }
 
-    private void verifyDeployAgent(TestDeploymentImpl agent, String mapKey, String id, RcObject artifact) throws Exception {
+    private void verifyDeployAgent(TestDeploymentImpl agent, Dao expected, Dao artifact) throws Exception {
         InOrder depVerifer = Mockito.inOrder(agent);
-        RcObject expected = new RcObject(null, null, mapKey, id);
         depVerifer.verify(agent, Mockito.times(1)).disable(expected);
         depVerifer.verify(agent, Mockito.times(1)).stop(expected);
         depVerifer.verify(agent, Mockito.times(1)).upgrade(Mockito.eq(expected), Mockito.eq(artifact), Mockito.any());
@@ -239,49 +234,47 @@ public class DeployServiceUnitTest {
     public class TestDeploymentImpl {
         
         @RetaskHandler("deploy.drain.webserver")
-        public void disable(RcObject instance) {
+        public void disable(Dao instance) {
             logger.info("Draining {}", instance.getId());
-            instance.checkedSet("state", InstanceState.Disabled);
+            instance.set("state", InstanceState.Disabled);
         }
 
         @RetaskHandler("deploy.stop.webserver")
-        public void stop(RcObject instance) {
+        public void stop(Dao instance) {
             logger.info("Stopping {}", instance.getId());
-            instance.checkedSet("state", InstanceState.Down);
+            instance.set("state", InstanceState.Down);
         }
 
         @RetaskHandler("deploy.upgrade.webserver")
-        public void upgrade(RcObject instance, RcObject artifact, RcObject distribution) {
+        public void upgrade(Dao instance, Dao artifact, Dao distribution) {
             logger.info("Upgrading {}", instance.getId());
-            instance.checkedSet("deploymentState", DeployState.Upgraded);
         }
 
         @RetaskHandler("deploy.start.webserver")
-        public void start(RcObject instance) {
+        public void start(Dao instance) {
             logger.info("Starting {}", instance.getId());
-            instance.checkedSet("state", InstanceState.Disabled);
+            instance.set("state", InstanceState.Disabled);
         }
 
         @RetaskHandler("deploy.enable.webserver")
-        public void join(RcObject instance) {
+        public void join(Dao instance) {
             logger.info("Enabling {}", instance.getId());
-            instance.checkedSet("state", InstanceState.Enabled);
+            instance.set("state", InstanceState.Enabled);
         }
 
         @RetaskHandler("deploy.distribute.webserver")
-        public void distribute(String host, RcObject distribution, RcObject artifact) throws InterruptedException {
-            distribution.checkedSet("state", DistributionState.Transferred);
+        public void distribute(String host, Dao distribution, Dao artifact) throws InterruptedException {
+            distribution.set("state", DistributionState.Transferred);
         }
 
         @RetaskHandler("deploy.cleanup.webserver")
-        public void cleanup(String host, RcObject distribution, RcObject artifact) {
-            distribution.checkedSet("state", DistributionState.CleanedUp);
+        public void cleanup(String host, Dao distribution, Dao artifact) {
+            distribution.set("state", DistributionState.CleanedUp);
         }
         
         @RetaskHandler("deploy.next.webserver")
-        public void chooseNext(RcObject deployment, List<RcObject> remaining) {
-            RcObject next = remaining.get(0);
-            next.checkedSet("deploymentState", DeployState.Ready);
+        public Dao chooseNext(Dao deployment, List<Dao> remaining) {
+            return remaining.get(0);
         }
     }
 
@@ -298,20 +291,20 @@ public class DeployServiceUnitTest {
         	this.activeKey = key("active");
         }
         
-        @RetaskInsertHandler("deployments")
-        public void deploymentInserted(@RetaskParam("object") RcObject deployment) {
+        @RetaskInsertHandler("deployment")
+        public void deploymentInserted(@RetaskParam("object") Dao deployment) {
         	logger.info("Deployment {} was created", deployment.getId());
         	rcommando.core().incr(activeKey);
         }
 
-        @RetaskDeleteHandler("deployments")
+        @RetaskDeleteHandler("deployment")
         public void deploymentDeleted(String id) {
         	logger.info("Deployment {} was deleted", id);
         	rcommando.core().decr(activeKey);
         }
 
-        @RetaskChangeHandler(setKey = "instances", field = "deploymentState")
-        public void changeState(@RetaskParam("object") RcObject instance, DeployState before, DeployState after) {
+        @RetaskChangeHandler(setKey = "instance", field = "deploymentState")
+        public void changeState(@RetaskParam("object") Dao instance, DeployState before, DeployState after) {
             logger.info("State change for {}: {} -> {}", instance.getId(), before, after);
         	rcommando.core().rpush(key(instance.getId()), after == null ? "null" : after.toString());
         }

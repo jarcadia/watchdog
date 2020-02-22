@@ -1,4 +1,4 @@
-package com.jarcadia.watchdog;
+package com.jarcadia.watchdog.exception;
 
 public class DiscoveryException extends RuntimeException {
 

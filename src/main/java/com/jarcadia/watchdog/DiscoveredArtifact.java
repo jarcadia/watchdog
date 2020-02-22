@@ -5,86 +5,35 @@ import java.util.Map;
 
 public class DiscoveredArtifact {
 
-    private String id;
-    private String type;
-    private String version;
-    private Map<String, Object> props;
+    private final String app;
+    private final String version;
+    private final Map<String, Object> props;
 
-    public DiscoveredArtifact(String type, String version) {
-        this.type = type;
+    public DiscoveredArtifact(String app, String version) {
+        this.app = app;
         this.version = version;
-        this.id = type + '_' + version;
         this.props = new HashMap<>();
-        this.props.put("type", type);
-        this.props.put("version", version);
     }
 
     public void addProp(String name, Object value) {
         this.props.put(name, value);
     }
-
-    public DiscoveredArtifact() { /* Reserved for Jackson */ }
     
-    public String getId() {
-		return id;
+    protected DiscoveredArtifact(String type, String version, Map<String, Object> props) {
+        this.app = type;
+        this.version = version;
+        this.props = props;
+    }
+
+    protected String getApp() {
+		return app;
 	}
 
-    public void setId(String id) {
-		this.id = id;
-	}
-
-    public String getType() {
-		return type;
-	}
-
-    public void setType(String type) {
-		this.type = type;
-	}
-
-    public String getVersion() {
+    protected String getVersion() {
 		return version;
 	}
 
-    public void setVersion(String version) {
-		this.version = version;
-	}
-
-    public void setProps(Map<String, Object> props) {
-		this.props = props;
-	}
-
-    public Map<String, Object> getProps() {
+    protected Map<String, Object> getProps() {
         return this.props;
-    }
-
-    @Override
-    public int hashCode() {
-        final int prime = 31;
-        int result = 1;
-        result = prime * result + ((type == null) ? 0 : type.hashCode());
-        result = prime * result + ((version == null) ? 0 : version.hashCode());
-        return result;
-    }
-
-    @Override
-    public boolean equals(Object obj) {
-        if (this == obj)
-            return true;
-        if (obj == null)
-            return false;
-        if (getClass() != obj.getClass())
-            return false;
-        DiscoveredArtifact other = (DiscoveredArtifact) obj;
-        if (type == null) {
-            if (other.type != null)
-                return false;
-        } else if (!type.equals(other.type))
-            return false;
-        if (version == null) {
-            if (other.version != null)
-                return false;
-        } else if (!version.equals(other.version))
-            return false;
-        return true;
     }
 }

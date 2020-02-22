@@ -1,4 +1,4 @@
-package com.jarcadia.watchdog;
+package com.jarcadia.watchdog.annontation;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -8,11 +8,6 @@ import java.util.concurrent.TimeUnit;
 
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)
-public @interface WatchdogPatrol {
+public @interface WatchdogInstanceDiscoveryHandler {
     
-    String type();
-    long interval();
-    TimeUnit unit();
-    String[] properties() default {};
-
 }

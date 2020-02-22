@@ -5,45 +5,36 @@ import java.util.Map;
 
 public class DiscoveredInstance {
 
-    private String type;
-    private String id;
-    private Map<String, Object> props;
+    private final String app;
+    private final String id;
+    private final Map<String, Object> props;
     
-    public DiscoveredInstance() { /* Reserved for Jackson */ }
-
-    public DiscoveredInstance(String type, String id, String name) {
+    public DiscoveredInstance(String app, String id) {
         this.id = id;
-        this.type = type;
+        this.app = app;
         this.props = new HashMap<>();
-        this.props.put("type", type);
-        this.props.put("name", name);
+        this.props.put("app", app);
     }
 
     public void addProp(String name, Object value) {
         this.props.put(name, value);
     }
+    
+    protected DiscoveredInstance(String app, String id, Map<String, Object> props) {
+        this.id = id;
+        this.app = app;
+        this.props = props;
+    }
 
-    public String getType() {
-		return type;
+    protected String getApp() {
+		return app;
 	}
 
-    public void setType(String type) {
-		this.type = type;
-	}
-
-    public String getId() {
+    protected String getId() {
 		return id;
 	}
 
-    public void setId(String id) {
-		this.id = id;
-	}
-
-    public Map<String, Object> getProps() {
+    protected Map<String, Object> getProps() {
 		return props;
-	}
-
-    public void setProps(Map<String, Object> props) {
-		this.props = props;
 	}
 }
