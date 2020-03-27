@@ -55,7 +55,7 @@ public class DeployServiceUnitTest {
     
     @Test
     public void testSingleInsanceDeployment() throws Exception {
-    	RedisClient redisClient = RedisClient.create("redis://localhost:6379/13");
+    	RedisClient redisClient = RedisClient.create("redis://localhost:6379/1");
     	
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
@@ -101,7 +101,7 @@ public class DeployServiceUnitTest {
 
     @Test
     public void testTwoInstanceDeployment() throws Exception {
-    	RedisClient redisClient = RedisClient.create("redis://localhost/14");
+    	RedisClient redisClient = RedisClient.create("redis://localhost/1");
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
         RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
@@ -153,7 +153,7 @@ public class DeployServiceUnitTest {
 
     @Test
     public void testLargeMultiDeployment() throws Exception {
-    	RedisClient redisClient = RedisClient.create("redis://localhost/15");
+    	RedisClient redisClient = RedisClient.create("redis://localhost/1");
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
         RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
@@ -218,7 +218,7 @@ public class DeployServiceUnitTest {
                 DeployState.PendingStop, DeployState.Stopping,
                 DeployState.PendingUpgrade, DeployState.Upgrading, DeployState.Upgraded,
                 DeployState.PendingStart, DeployState.Starting,
-                DeployState.PendingEnable, DeployState.Enabling, null);
+                DeployState.PendingEnable, DeployState.Enabling, DeployState.Complete, null);
     }
 
     private void verifyDeployAgent(TestDeploymentImpl agent, Dao expected, Dao artifact) throws Exception {
@@ -230,50 +230,67 @@ public class DeployServiceUnitTest {
         depVerifer.verify(agent, Mockito.times(1)).join(expected);
     }
     
+    private static void delay() {
+    	try {
+			Thread.sleep(1000);
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+    }
+    
     @RetaskWorker
     public class TestDeploymentImpl {
         
         @RetaskHandler("deploy.drain.webserver")
         public void disable(Dao instance) {
             logger.info("Draining {}", instance.getId());
+            delay();
             instance.set("state", InstanceState.Disabled);
         }
 
         @RetaskHandler("deploy.stop.webserver")
         public void stop(Dao instance) {
             logger.info("Stopping {}", instance.getId());
+            delay();
             instance.set("state", InstanceState.Down);
         }
 
         @RetaskHandler("deploy.upgrade.webserver")
         public void upgrade(Dao instance, Dao artifact, Dao distribution) {
+            delay();
             logger.info("Upgrading {}", instance.getId());
         }
 
         @RetaskHandler("deploy.start.webserver")
         public void start(Dao instance) {
             logger.info("Starting {}", instance.getId());
+            delay();
             instance.set("state", InstanceState.Disabled);
         }
 
         @RetaskHandler("deploy.enable.webserver")
         public void join(Dao instance) {
             logger.info("Enabling {}", instance.getId());
+            delay();
             instance.set("state", InstanceState.Enabled);
         }
 
         @RetaskHandler("deploy.distribute.webserver")
         public void distribute(String host, Dao distribution, Dao artifact) throws InterruptedException {
+            delay();
             distribution.set("state", DistributionState.Transferred);
         }
 
         @RetaskHandler("deploy.cleanup.webserver")
         public void cleanup(String host, Dao distribution, Dao artifact) {
+            delay();
             distribution.set("state", DistributionState.CleanedUp);
         }
         
         @RetaskHandler("deploy.next.webserver")
         public Dao chooseNext(Dao deployment, List<Dao> remaining) {
+            delay();
             return remaining.get(0);
         }
     }

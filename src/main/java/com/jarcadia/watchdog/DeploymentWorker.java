@@ -340,14 +340,13 @@ public class DeploymentWorker {
 
     private void instanceIsEnabledHandler(DeployInstance instance, TaskBucket bucket) {
         if (setRemove("deploy.pending-enable", instance)) {
+            instance.setDeploymentState(DeployState.Complete);
             Deployment deployment = instance.getDeployment();
             logger.info("Completed instance {} in deployment {}", instance.getId(), deployment.getId());
-            System.out.println("Before: " + deployment.getRemaining());
             List<DeployInstance> remaining = deployment.getRemaining().stream()
                     .filter(i -> !instance.equals(i))
                     .collect(Collectors.toList());
             deployment.setRemaining(remaining);
-            System.out.println("After: " + remaining);
             Task.create("deploy.advance").param("deployment", deployment).dropIn(bucket);
         }
     }
@@ -403,16 +402,16 @@ public class DeploymentWorker {
         return Task.create("deploy.enable." + instance.getApp()).param("instance", instance);
     }
 
-    @RetaskHandler("deploy.online")
-    public Task online(DeployInstance instance) throws IOException {
-        Deployment deployment = instance.getDeployment();
-        List<DeployInstance> remaining = deployment.getRemaining().stream()
-                .filter(i -> !instance.equals(i))
-                .collect(Collectors.toList());
-        deployment.setRemaining(remaining);
-        logger.info("Completed instance {} in deployment {}", instance.getId(), deployment.getId());
-        return Task.create("deploy.advance").param("deployment", deployment);
-    }
+//    @RetaskHandler("deploy.online")
+//    public Task online(DeployInstance instance) throws IOException {
+//        Deployment deployment = instance.getDeployment();
+//        List<DeployInstance> remaining = deployment.getRemaining().stream()
+//                .filter(i -> !instance.equals(i))
+//                .collect(Collectors.toList());
+//        deployment.setRemaining(remaining);
+//        logger.info("Completed instance {} in deployment {}", instance.getId(), deployment.getId());
+//        return Task.create("deploy.advance").param("deployment", deployment);
+//    }
 
     /*
      * This helper method is invoked when a instance is ready to be upgraded and handles two cases.

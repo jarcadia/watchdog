@@ -21,5 +21,6 @@ public enum DeployState {
     PendingEnable,
     Enabling,
     
+    Complete,
     Failed;
 }
