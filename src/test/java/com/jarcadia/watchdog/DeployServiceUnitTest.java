@@ -2,7 +2,9 @@ package com.jarcadia.watchdog;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -54,12 +56,16 @@ public class DeployServiceUnitTest {
     }
     
     @Test
-    public void testSingleInsanceDeployment() throws Exception {
+    public void testSingleInstanceDeployment() throws Exception {
     	RedisClient redisClient = RedisClient.create("redis://localhost:6379/1");
     	
         RedisCommando rcommando = RedisCommando.create(redisClient);
         rcommando.core().flushdb();
         RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
+        
+        // Setup group
+        DaoSet groups = rcommando.getSetOf("group");
+        groups.get("group").set("app", "webserver");
 
         // Setup instances
         DaoSet instances = rcommando.getSetOf("instance");
@@ -82,7 +88,7 @@ public class DeployServiceUnitTest {
         manager.addInstance(DeploymentWorker.class, deploymentWorker);
 
         // Start retask and submit deploy task 
-        manager.start(Task.create("deploy")
+        manager.start(Task.create("deploy.artifact")
                     .param("instances", List.of("instance:inst"))
                     .param("artifact", "artifact:webserver_1.0"));
 
@@ -90,7 +96,7 @@ public class DeployServiceUnitTest {
         deployStateRecorder.awaitCompletion(1, TimeUnit.SECONDS);
 
         // Verify the instances deploy states progressed as expected
-        Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates("inst"));
+        Assertions.assertIterableEquals(expectedDeployUpgradeStates(), deployStateRecorder.getStates("inst"));
 
         // Verify the deployment agent spy callbacks were invoked in order
         verifyDeployAgent(testDeployImpl, rcommando.getSetOf("instance").get("inst"), artifact);
@@ -113,7 +119,7 @@ public class DeployServiceUnitTest {
         
         // Setup groups
         DaoSet groups = rcommando.getSetOf("group");
-        groups.get("group").set("instances", Arrays.asList("inst1", "inst2"));
+        groups.get("group").set("app", "webserver", "instances", Arrays.asList("inst1", "inst2"));
 
         // Setup artifact
         Dao artifact = rcommando.getSetOf("artifact").get("webserver_1.0");
@@ -132,7 +138,7 @@ public class DeployServiceUnitTest {
         manager.addInstance(DeploymentWorker.class, deployWorker);
 
         // Submit task to start deployment
-        manager.start(Task.create("deploy")
+        manager.start(Task.create("deploy.artifact")
                 .param("instances",  Arrays.asList("instance:inst1", "instance:inst2"))
                 .param("artifact", "artifact:webserver_1.0"));
 
@@ -140,8 +146,8 @@ public class DeployServiceUnitTest {
         stateRecorder.awaitCompletion(1, TimeUnit.SECONDS);
 
         // Verify the instances deploy states progressed as expected
-        Assertions.assertIterableEquals(expectedDeployStates(), stateRecorder.getStates("inst1"));
-        Assertions.assertIterableEquals(expectedDeployStates(), stateRecorder.getStates("inst2"));
+        Assertions.assertIterableEquals(expectedDeployUpgradeStates(), stateRecorder.getStates("inst1"));
+        Assertions.assertIterableEquals(expectedDeployUpgradeStates(), stateRecorder.getStates("inst2"));
 
         // Verify the deployment agent spy callbacks were invoked in order
         verifyDeployAgent(deploymentImpl, rcommando.getSetOf("instance").get("inst1"), artifact);
@@ -174,7 +180,7 @@ public class DeployServiceUnitTest {
             inst1.set("app", "webserver", "group", "group:" + groupId, "host", groupHosts[0], "port", 8080 + i, "state", InstanceState.Enabled);
             Dao inst2 = instanceSet.get(inst2Id);
             inst2.set("app", "webserver", "group", "group:" + groupId, "host", groupHosts[1], "port", 8080 + i, "state", InstanceState.Enabled);
-            groups.get(groupId).set("instances", Arrays.asList(inst1, inst2));
+            groups.get(groupId).set("app", "webserver", "instances", Arrays.asList(inst1, inst2));
 
             instances.add(inst1);
             instances.add(inst2);
@@ -198,7 +204,7 @@ public class DeployServiceUnitTest {
         manager.addInstance(DeploymentWorker.class, deployService);
 
         // Submit task to start deployment
-        manager.start(Task.create("deploy")
+        manager.start(Task.create("deploy.artifact")
                 .param("instances",  instances)
                 .param("artifact", "artifact:webserver_1.0"));
 
@@ -206,17 +212,89 @@ public class DeployServiceUnitTest {
         deployStateRecorder.awaitCompletion(10, TimeUnit.SECONDS);
 
         for (Dao instance : instances) {
-            Assertions.assertIterableEquals(expectedDeployStates(), deployStateRecorder.getStates(instance.getId()));
+            Assertions.assertIterableEquals(expectedDeployUpgradeStates(), deployStateRecorder.getStates(instance.getId()));
             verifyDeployAgent(testDeploymentWorker, instance, artifact);
         }
         manager.shutdown(1, TimeUnit.SECONDS);
     }
+    
+    
+    
+    
+    
+    @Test
+    public void testSingleInstanceRestart() throws Exception {
+    	RedisClient redisClient = RedisClient.create("redis://localhost:6379/1");
 
-    private List<DeployState> expectedDeployStates() {
+        RedisCommando rcommando = RedisCommando.create(redisClient);
+        rcommando.core().flushdb();
+        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
+        
+        // Setup group
+        DaoSet groups = rcommando.getSetOf("group");
+        groups.get("group").set("app", "webserver");
+    	
+
+        // Setup instances
+        DaoSet instances = rcommando.getSetOf("instance");
+        instances.get("inst").set("app", "webserver", "group", "group:group", "host", "web01", "port", 8080, "state", InstanceState.Enabled);
+        
+        // Setup test Deployment implementation
+        TestDeploymentImpl testDeployImpl = Mockito.spy(new TestDeploymentImpl());
+        manager.addInstance(TestDeploymentImpl.class, testDeployImpl);
+
+        // Setup DeploymentStateRecorder for assertions
+        StateRecorder deployStateRecorder = new StateRecorder(rcommando);
+        manager.addInstance(StateRecorder.class, deployStateRecorder);
+
+        // Create DeployWorker under test
+        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando);
+        manager.addInstance(DeploymentWorker.class, deploymentWorker);
+
+        // Start retask and submit deploy task 
+        manager.start(Task.create("deploy.restart")
+                    .param("instances", List.of("instance:inst")));
+
+        // Wait for the deployment to complete
+        deployStateRecorder.awaitCompletion(1, TimeUnit.SECONDS);
+
+        // Verify the instances deploy states progressed as expected
+        Assertions.assertIterableEquals(expectedDeployRestartStates(), deployStateRecorder.getStates("inst"));
+
+        // Verify the deployment agent spy callbacks were invoked in order
+//        verifyDeployAgent(testDeployImpl, rcommando.getSetOf("instance").get("inst"), artifact);
+
+        // Shutdown retask
+        manager.shutdown(1, TimeUnit.SECONDS);
+    }
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+
+    private List<DeployState> expectedDeployUpgradeStates() {
         return Arrays.asList(DeployState.Waiting, DeployState.Ready,
                 DeployState.PendingDrain, DeployState.Draining, 
                 DeployState.PendingStop, DeployState.Stopping,
                 DeployState.PendingUpgrade, DeployState.Upgrading, DeployState.Upgraded,
+                DeployState.PendingStart, DeployState.Starting,
+                DeployState.PendingEnable, DeployState.Enabling, DeployState.Complete, null);
+    }
+    
+    private List<DeployState> expectedDeployRestartStates() {
+        return Arrays.asList(DeployState.Waiting, DeployState.Ready,
+                DeployState.PendingDrain, DeployState.Draining, 
+                DeployState.PendingStop, DeployState.Stopping,
                 DeployState.PendingStart, DeployState.Starting,
                 DeployState.PendingEnable, DeployState.Enabling, DeployState.Complete, null);
     }
