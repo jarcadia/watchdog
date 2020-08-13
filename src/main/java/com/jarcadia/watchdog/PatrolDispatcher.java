@@ -16,7 +16,7 @@ import com.jarcadia.rcommando.DaoValue;
 import com.jarcadia.rcommando.DaoValues;
 import com.jarcadia.rcommando.ProxySet;
 import com.jarcadia.rcommando.RedisCommando;
-import com.jarcadia.rcommando.proxy.DaoProxy;
+import com.jarcadia.rcommando.proxy.Proxy;
 import com.jarcadia.retask.HandlerMethod;
 import com.jarcadia.retask.Retask;
 import com.jarcadia.retask.Task;
@@ -63,14 +63,14 @@ public class PatrolDispatcher {
         for (HandlerMethod patrol : instancePatrolHandlers) {
         	Patrol record = instancePatrolSet.get(patrol.getRoutingKey());
             WatchdogInstancePatrol annontation = (WatchdogInstancePatrol) patrol.getAnnontation();
-        	record.setup(annontation.type(), annontation.interval(), annontation.unit(), annontation.properties());
+        	record.setup(annontation.app(), annontation.interval(), annontation.unit(), annontation.properties());
         }
         
     	// Insert/update all defined Group Patrols
         for (HandlerMethod patrol : groupPatrolHandlers) {
         	Patrol record = groupPatrolSet.get(patrol.getRoutingKey());
             WatchdogGroupPatrol annontation = (WatchdogGroupPatrol) patrol.getAnnontation();
-        	record.setup(annontation.type(), annontation.interval(), annontation.unit(), annontation.properties());
+        	record.setup(annontation.app(), annontation.interval(), annontation.unit(), annontation.properties());
         }
     }
     
@@ -87,8 +87,8 @@ public class PatrolDispatcher {
     public void handlePatrolInsertedOrUpdated(Patrol patrol, String field, ProxySet<? extends AppAssignable> set) {
     	 logger.info("Detected change on patrol {}", patrol.getId());
          
-         // If the type changed, all the active instances of this patrol must be cancelled
-         if ("type".equals(field)) {
+         // If the app changed, all the active instances of this patrol must be cancelled
+         if ("app".equals(field)) {
              activePatrolSet.stream()
                      .filter(activePatrol -> patrol.equals(activePatrol.getPatrol()))
                      .forEach(activePatrol -> activePatrol.delete());
@@ -97,12 +97,12 @@ public class PatrolDispatcher {
          /* 
           * Dispatch this updated/inserted patrol for all instances 
           * 
-          * If this is a new patrol, or the type changed, then this will be the initial dispatch.
+          * If this is a new patrol, or the app changed, then this will be the initial dispatch.
           * Otherwise, one of the other patrol related fields (interval, unit, properties) changed
           * and this will update those active patrol records, which will redispatch the currently active patrols
           */
           set.stream()
-              .filter(group -> patrol.getType().equals(group.getApp()))
+              .filter(group -> patrol.getApp().equals(group.getApp()))
               .forEach(instance -> activatePatrol(instance, patrol));
     }
     
@@ -135,7 +135,7 @@ public class PatrolDispatcher {
     
     private void handleItemInserted(AppAssignable item, ProxySet<Patrol> patrolSet) {
     	patrolSet.stream()
-            .filter(patrol -> item.getApp().equals(patrol.getType()))
+            .filter(patrol -> item.getApp().equals(patrol.getApp()))
             .forEach(patrol -> {
                 logger.info("Insertion of {} {} requires activation of {}", item.getApp(), item.getId(), patrol.getId());
                 activatePatrol(item, patrol);
@@ -176,7 +176,7 @@ public class PatrolDispatcher {
     	activePatrolSet.stream()
             .filter(activePatrol -> itemId.equals(activePatrol.getTarget().getId()))
             .forEach(activePatrol -> {
-                logger.info("Deletion of {} {} requires deletion of patrol {}", activePatrol.getType(), itemId, activePatrol.getPatrol().getId());
+                logger.info("Deletion of {} {} requires deletion of patrol {}", activePatrol.getApp(), itemId, activePatrol.getPatrol().getId());
                 activePatrol.delete();
             });
     }
@@ -184,7 +184,7 @@ public class PatrolDispatcher {
     private void activatePatrol(AppAssignable item, Patrol patrol) {
     	ActivePatrol record = activePatrolSet.get(patrol.getId() + "->" + item.getId());
     	String[] values = getRawValues(item, patrol.getFields());
-    	record.setup(patrol.getType(), item, patrol, patrol.getInterval(), patrol.getUnit(), patrol.getFields(), values);
+    	record.setup(patrol.getApp(), item, patrol, patrol.getInterval(), patrol.getUnit(), patrol.getFields(), values);
     }
     
     private String[] getRawValues(AppAssignable item, String[] fields) {
@@ -253,19 +253,19 @@ public class PatrolDispatcher {
     	return new PatrolParamProducer(params);
     }
 
-    private interface Patrol extends DaoProxy {
+    private interface Patrol extends Proxy {
 
-    	public String getType();
+    	public String getApp();
     	public long getInterval();
     	public TimeUnit getUnit();
     	public String[] getFields();
     	
-    	public void setup(String type, long interval, TimeUnit unit, String[] fields);
+    	public void setup(String app, long interval, TimeUnit unit, String[] fields);
     }
     
-    private interface ActivePatrol extends DaoProxy {
+    private interface ActivePatrol extends Proxy {
     	
-    	public String getType();
+    	public String getApp();
     	public Dao getTarget();
     	public Patrol getPatrol();
     	public long getInterval();
@@ -273,7 +273,7 @@ public class PatrolDispatcher {
     	public Set<String> getFields();
     	public String[] getValues();
     	
-    	public void setup(String type, DaoProxy target, Patrol patrol, long interval, TimeUnit unit, String[] fields, String[] values);
+    	public void setup(String app, Proxy target, Patrol patrol, long interval, TimeUnit unit, String[] fields, String[] values);
     	public void setValues(String[] values);
     }
     
@@ -297,7 +297,7 @@ public class PatrolDispatcher {
         }
         
         private void prepareTaskParameters(Task task, Dao dao) {
-            task.param(dao.getSetKey(), dao);
+            task.param(dao.getType(), dao);
             addParams(task, dao);
         }
         
@@ -305,7 +305,7 @@ public class PatrolDispatcher {
         	// TODO get all values in one call
             for (PatrolParam param : params) {
             	DaoValue value = dao.get(param.getName());
-            	Object typed = value.isPresent() ? value.as(param.getType()) : null;
+            	Object typed = value.isPresent() ? value.as(param.getJavaType()) : null;
                 task.param(param.getName(), typed);
             }
         }
@@ -313,17 +313,17 @@ public class PatrolDispatcher {
 
    private class PatrolParam {
 
-        private final JavaType type;
+        private final JavaType javaType;
         private final String name;
 
-        private PatrolParam(String name, JavaType type) {
+        private PatrolParam(String name, JavaType javaType) {
             super();
             this.name = name;
-            this.type = type;
+            this.javaType = javaType;
         }
         
-        private JavaType getType() {
-            return type;
+        private JavaType getJavaType() {
+            return javaType;
         }
         
         private String getName() {

@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory;
 import com.jarcadia.rcommando.CountDownLatch;
 import com.jarcadia.rcommando.ProxySet;
 import com.jarcadia.rcommando.RedisCommando;
-import com.jarcadia.rcommando.proxy.DaoProxy;
+import com.jarcadia.rcommando.proxy.Proxy;
 import com.jarcadia.retask.Retask;
 import com.jarcadia.retask.Task;
 import com.jarcadia.retask.TaskBucket;
@@ -40,12 +40,14 @@ public class DeploymentWorker {
     private final Logger logger = LoggerFactory.getLogger(DeploymentWorker.class);
 
     private final RedisCommando rcommando;
+    private final NotificationService notify;
 
-    protected DeploymentWorker(RedisCommando rcommando) {
+    protected DeploymentWorker(RedisCommando rcommando, NotificationService notify) {
         this.rcommando = rcommando;
+        this.notify = notify;
     }
     
-    private interface Deployment extends DaoProxy {
+    private interface Deployment extends Proxy {
     	
     	public String getApp();
     	public String getLabel();
@@ -54,7 +56,7 @@ public class DeploymentWorker {
     	public List<DeployInstance> getInstances();
     	public List<DeployInstance> getRemaining();
 
-    	public void setup(String app, String cohortId, DeployGroup group, String label, Artifact artifact, List<DeployInstance> instances, List<DeployInstance> remaining, double progress);
+    	public void setup(String app, String cohortId, DeployGroup group, String label, Artifact artifact, String version, List<DeployInstance> instances, List<DeployInstance> remaining, double progress);
     	public void setRemaining(List<DeployInstance> remaining);
     	public void setProgress(double progress);
     }
@@ -105,6 +107,7 @@ public class DeploymentWorker {
 
     	distribution.delete();
     	logger.info("Distribution {} cancelled", distribution.getId());
+
     }
 
     @RetaskHandler("deploy.cancel.deployment")
@@ -130,12 +133,22 @@ public class DeploymentWorker {
 
     @RetaskHandler("deploy.artifact")
     public void deployUpgrade(RedisCommando rcommando, Retask retask, Artifact artifact, List<DeployInstance> instances, TaskBucket bucket) {
-    	deployHelper(rcommando, retask, artifact, instances, bucket);
+        try {
+            deployHelper(rcommando, retask, artifact, instances, bucket);
+        } catch (Exception ex) {
+            notify.warn("Error while deploying: " + ex.getMessage());
+            logger.warn("Error while deploying", ex);
+        }
     }
     
     @RetaskHandler("deploy.restart")
     public void restart(RedisCommando rcommando, Retask retask, List<DeployInstance> instances, TaskBucket bucket) {
-    	deployHelper(rcommando, retask, null, instances, bucket);
+        try {
+            deployHelper(rcommando, retask, null, instances, bucket);
+        } catch (Exception ex) {
+            notify.warn("Error while restarting: " + ex.getMessage());
+            logger.warn("Error while restarting", ex);
+        }
     }
     
     private void deployHelper(RedisCommando rcommando, Retask retask, Artifact artifact, List<DeployInstance> instances, TaskBucket bucket) {
@@ -157,8 +170,7 @@ public class DeploymentWorker {
                 .distinct()
                 .collect(Collectors.toList());
         
-        if (isUpgrade) {
-            // This block will validate arguments if this is an upgrade
+        if (isUpgrade) { // This block will validate arguments if this is an upgrade
         	
         	// Ensure all instances are the same app
             if (apps.size() > 1) {
@@ -212,6 +224,7 @@ public class DeploymentWorker {
                 .collect(Collectors.groupingBy(i -> i.getGroup().get().getId()));
         
         // Create deployments for all grouped instances
+        int numDeployments = 0;
         ProxySet<Deployment> deploymentSet = rcommando.getSetOf("deployment", Deployment.class);
         ProxySet<DeployGroup> groupsSet = rcommando.getSetOf("group", DeployGroup.class);
         for (Entry<String, List<DeployInstance>> entry : instancesByGroup.entrySet()) {
@@ -225,8 +238,9 @@ public class DeploymentWorker {
             // Use instance label instead of group label if only a single instance is involved
             String label = groupInstances.size() == 1 ? groupInstances.get(0).getId() : group.getId();
             
-            deployment.setup(app, cohortId, group, label, artifact, groupInstances, groupInstances, 0.0);
+            deployment.setup(app, cohortId, group, label, artifact, isUpgrade ? artifact.getVersion() : null, groupInstances, groupInstances, 0.0);
             Task.create("deploy.advance").param("deployment", deployment).dropIn(bucket);
+            numDeployments++;
 
             // Set the group's deployment
             group.setDeployment(deployment);
@@ -245,8 +259,9 @@ public class DeploymentWorker {
         for (DeployInstance instance : ungroupedInstances) {
             Deployment deployment = deploymentSet.get(System.currentTimeMillis() + "_" + UUID.randomUUID().toString());
             // TODO set label to instance label instead of instance ID
-            deployment.setup(instance.getApp(), cohortId, null, instance.getId(), artifact, List.of(instance), List.of(instance), 0.0);
+            deployment.setup(instance.getApp(), cohortId, null, instance.getId(), artifact, isUpgrade ? artifact.getVersion() : null, List.of(instance), List.of(instance), 0.0);
             Task.create("deploy.advance").param("deployment", deployment).dropIn(bucket);
+            numDeployments++;
             instance.setDeployment(deployment, DeployState.Waiting, 0.0);
             setAdd("deploy.pending", instance);
         }
@@ -281,26 +296,9 @@ public class DeploymentWorker {
                 }
             }
         }
+        notify.info("Started " + numDeployments + " deployments");
     }
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
 
-    
-    
-    
-    
-    
-    
-    
     @RetaskHandler("deploy.advance")
     public void advanceDeployment(Retask retask, Deployment deployment) throws InterruptedException, ExecutionException {
         List<DeployInstance> remainingInstances = deployment.getRemaining();
@@ -633,11 +631,11 @@ public class DeploymentWorker {
     	throw new UnsupportedOperationException("Unrecognized DeployState " + state);
     }
 
-    private void setAdd(String set, DaoProxy instance) {
+    private void setAdd(String set, Proxy instance) {
         rcommando.core().sadd(set, instance.getId());
     }
     
-    private boolean setRemove(String set, DaoProxy instance) {
+    private boolean setRemove(String set, Proxy instance) {
         return rcommando.core().srem(set, instance.getId()) == 1;
     }
 }

@@ -1,11 +1,8 @@
 package com.jarcadia.watchdog;
 
 import java.io.IOException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
@@ -19,27 +16,26 @@ import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 import com.jarcadia.rcommando.Dao;
 import com.jarcadia.rcommando.RedisCommando;
-import com.jarcadia.rcommando.SetResult;
-import com.jarcadia.rcommando.proxy.DaoProxy;
+import com.jarcadia.rcommando.proxy.Proxy;
 import com.jarcadia.retask.Retask;
 import com.jarcadia.retask.RetaskManager;
 import com.jarcadia.retask.RetaskRecruiter;
-import com.jarcadia.watchdog.annontation.MonitoredValue;
-import com.jarcadia.watchdog.annontation.MonitoredValues;
 import com.jarcadia.watchdog.annontation.WatchdogArtifactDiscoveryHandler;
 import com.jarcadia.watchdog.annontation.WatchdogGroupDiscoveryHandler;
 import com.jarcadia.watchdog.annontation.WatchdogGroupPatrol;
 import com.jarcadia.watchdog.annontation.WatchdogInstanceDiscoveryHandler;
 import com.jarcadia.watchdog.annontation.WatchdogInstancePatrol;
-import com.jarcadia.watchdog.exception.WatchdogException;
 
 import io.lettuce.core.RedisClient;
 
 public class Watchdog {
     
-    public static RetaskManager init(RedisClient redisClient, RedisCommando rcommando, String packageName) {
-    	
-    	// Setup rcommando internal object mapper to correctly serialize/deserialize Discovery models
+    public static WatchdogManager init(RedisClient redisClient, RedisCommando rcommando, String packageName) {
+
+		// Setup NotificationService
+		NotificationService notificationService = new NotificationService(rcommando);
+
+		// Setup rcommando internal object mapper to correctly serialize/deserialize Discovery models
     	registerDiscoveredInstanceModule(rcommando.getObjectMapper());
     	registerDiscoveredGroupModule(rcommando.getObjectMapper());
     	registerDiscoveredArtifactModule(rcommando.getObjectMapper());
@@ -61,30 +57,28 @@ public class Watchdog {
         recruiter.registerTaskHandlerAnnontation(WatchdogGroupPatrol.class,
         		(clazz, method, annotation) -> "patrol.group." + clazz.getSimpleName() + "." + method.getName());
         
-        
-        RetaskManager manager = Retask.init(redisClient, rcommando, recruiter);
+        RetaskManager retaskManager = Retask.init(redisClient, rcommando, recruiter);
 
         // Setup dispatcher and discovery worker
         PatrolDispatcher dispatcher = new PatrolDispatcher(rcommando,
-        		manager.getHandlersByAnnontation(WatchdogInstancePatrol.class),
-        		manager.getHandlersByAnnontation(WatchdogGroupPatrol.class));
+        		retaskManager.getHandlersByAnnotation(WatchdogInstancePatrol.class),
+        		retaskManager.getHandlersByAnnotation(WatchdogGroupPatrol.class));
         DiscoveryWorker discoveryWorker = new DiscoveryWorker(dispatcher);
         
         WatchdogMonitoringFactory monitoringFactory = new WatchdogMonitoringFactory(rcommando);
-        for (Class<? extends DaoProxy> proxyClass : manager.getDaoProxies()) {
+        for (Class<? extends Proxy> proxyClass : retaskManager.getDaoProxies()) {
         	monitoringFactory.setupMonitoring(proxyClass);
         }
 
         // Setup deployment worker
-        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando);
+        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando, notificationService);
         
         // Register instances 
-        manager.addInstances(dispatcher, discoveryWorker, deploymentWorker);
-        return manager;
+        retaskManager.addWorker(dispatcher, discoveryWorker, deploymentWorker);
+
+        return new WatchdogManager(retaskManager, notificationService);
     }
-    
-   
-    
+
     private static void registerDiscoveredInstanceModule(ObjectMapper mapper) {
         SimpleModule module = new SimpleModule();
         module.addSerializer(new DiscoveredInstanceSerializer());

@@ -19,10 +19,10 @@ import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.jarcadia.rcommando.Dao;
-import com.jarcadia.rcommando.DaoSet;
+import com.jarcadia.rcommando.Index;
 import com.jarcadia.rcommando.ProxySet;
 import com.jarcadia.rcommando.RedisCommando;
-import com.jarcadia.rcommando.SetResult;
+import com.jarcadia.rcommando.Modification;
 import com.jarcadia.rcommando.proxy.Internal;
 import com.jarcadia.retask.Retask;
 import com.jarcadia.retask.Task;
@@ -77,7 +77,7 @@ public class DiscoveryWorker {
 
 
 				// TODO replace daos with proxies
-				DaoSet artifactSet = rcommando.getSetOf("artifact");
+				Index artifactSet = rcommando.getSetOf("artifact");
 
 				StatsByApp artifactResults = new StatsByApp();
 				for (DiscoveredArtifact discovered : discoveredArtifacts) {
@@ -87,7 +87,7 @@ public class DiscoveryWorker {
 					props.put("app", discovered.getApp());
 					props.put("version", discovered.getVersion());
 					props.putAll(discovered.getProps());
-					Optional<SetResult> result = artifact.set(props);
+					Optional<Modification> result = artifact.set(props);
 					artifactResults.record(discovered.getApp(), result);
 					artifact.set("discoveryId", discoveryId);
 				}
@@ -146,7 +146,6 @@ public class DiscoveryWorker {
 				Map<String, List<DiscoveredInstance>> discoveredInstancesByApp = discoveredInstances.stream()
 						.collect(Collectors.groupingBy(DiscoveredInstance::getApp));
 
-
 				// Prepare map to store created proxies
 				Map<String, List<DiscoveryInstanceProxy>> instancesByApp = new HashMap<>();
 
@@ -166,7 +165,7 @@ public class DiscoveryWorker {
 						DiscoveryInstanceProxy instance = instanceSet.get(discovered.getApp() + "." + discovered.getId());
 
 						// Set the DaoProxy values with those from the discovered object
-						Optional<SetResult> result = instance.getDao().set(discovered.getProps());
+						Optional<Modification> result = instance.getDao().set(discovered.getProps());
 
 						// Record statistics for this app/result
 						instanceStats.record(app, result);
@@ -219,7 +218,7 @@ public class DiscoveryWorker {
 						props.put("instances", discovered.getInstances());
 						props.putAll(discovered.getProps());
 
-						Optional<SetResult> result = group.getDao().set(props);
+						Optional<Modification> result = group.getDao().set(props);
 						groupStats.record(app, result);
 						if (result.isPresent()) {
 							//                    dispatcher.dispatchPatrolsFor(retask, group);
@@ -278,7 +277,7 @@ public class DiscoveryWorker {
 		public String getDiscoveryId();
 		public List<DiscoveryInstanceProxy> getInstances();
 
-		public void setDiscoveryId(String discoveryId);
+		public void setDiscoveryId(@Internal  String discoveryId);
 
 	}
 
@@ -313,7 +312,7 @@ public class DiscoveryWorker {
 			return map.keySet();
 		}
 
-		private void record(String app, Optional<SetResult> result) {
+		private void record(String app, Optional<Modification> result) {
 			getStats(app).record(result);
 		}
 
@@ -362,7 +361,7 @@ public class DiscoveryWorker {
 			this.removed = 0;
 		}
 
-		private void record(Optional<SetResult> result) {
+		private void record(Optional<Modification> result) {
 			discovered += 1;
 			if (result.isPresent()) {
 				if (result.get().isInsert()) {

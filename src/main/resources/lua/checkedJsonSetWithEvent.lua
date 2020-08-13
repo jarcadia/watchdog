@@ -24,7 +24,7 @@ local function doSet()
 end
 local prev = doSet();
 if (prev ~= ARGV[3]) then
-    local change = '{"id": "' .. ARGV[1] .. '", "field":"' .. ARGV[2] .. '", "timestamp":' .. ARGV[4] .. ', previous":' .. prev .. ',"current":' .. ARGV[3] .. '}';
-    redis.call('publish', KEYS[2], change);
+    local changedValue = '{"id": "' .. ARGV[1] .. '", "field":"' .. ARGV[2] .. '", "timestamp":' .. ARGV[4] .. ', previous":' .. prev .. ',"current":' .. ARGV[3] .. '}';
+    redis.call('publish', KEYS[2], changedValue);
 end
 return prev;

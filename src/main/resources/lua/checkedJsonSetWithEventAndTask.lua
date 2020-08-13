@@ -11,9 +11,9 @@ local function doSet()
 end
 local prev = doSet();
 if (prev ~= ARGV[3]) then
-    local change = '{"id": "' .. ARGV[1] .. '", "field":"' .. ARGV[2] .. '", "timestamp":' .. ARGV[4] .. ', "previous":' .. prev .. ',"current":' .. ARGV[3] .. '}';
-    --redis.call('publish', KEYS[3], change);
-    redis.call('hmset', KEYS[4], 'routingKey', 'state-change.' .. KEYS[1] .. '.' .. ARGV[2], 'params', change);
+    local changedValue = '{"id": "' .. ARGV[1] .. '", "field":"' .. ARGV[2] .. '", "timestamp":' .. ARGV[4] .. ', "previous":' .. prev .. ',"current":' .. ARGV[3] .. '}';
+    --redis.call('publish', KEYS[3], changedValue);
+    redis.call('hmset', KEYS[4], 'routingKey', 'state-changedValue.' .. KEYS[1] .. '.' .. ARGV[2], 'params', changedValue);
 
     -- Push extra args into metadata
     -- for i=5,#ARGV,2 do

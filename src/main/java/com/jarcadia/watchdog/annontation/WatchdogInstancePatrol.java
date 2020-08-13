@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit;
 @Target(ElementType.METHOD)
 public @interface WatchdogInstancePatrol {
     
-    String type();
+    String app();
     long interval();
     TimeUnit unit();
     String[] properties() default {};

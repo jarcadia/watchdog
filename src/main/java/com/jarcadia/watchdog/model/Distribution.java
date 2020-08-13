@@ -1,9 +1,9 @@
 package com.jarcadia.watchdog.model;
 
-import com.jarcadia.rcommando.proxy.DaoProxy;
+import com.jarcadia.rcommando.proxy.Proxy;
 import com.jarcadia.watchdog.States.DistributionState;
 
-public interface Distribution extends DaoProxy {
+public interface Distribution extends Proxy {
 	
 	public String getApp();
 	public String getHost();

@@ -2,9 +2,7 @@ package com.jarcadia.watchdog;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -19,7 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.jarcadia.rcommando.Dao;
-import com.jarcadia.rcommando.DaoSet;
+import com.jarcadia.rcommando.Index;
 import com.jarcadia.rcommando.RedisCommando;
 import com.jarcadia.retask.Retask;
 import com.jarcadia.retask.RetaskManager;
@@ -64,11 +62,11 @@ public class DeployServiceUnitTest {
         RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
         
         // Setup group
-        DaoSet groups = rcommando.getSetOf("group");
+        Index groups = rcommando.getSetOf("group");
         groups.get("group").set("app", "webserver");
 
         // Setup instances
-        DaoSet instances = rcommando.getSetOf("instance");
+        Index instances = rcommando.getSetOf("instance");
         instances.get("inst").set("app", "webserver", "group", "group:group", "host", "web01", "port", 8080, "state", InstanceState.Enabled);
         
         // Setup artifact
@@ -77,15 +75,15 @@ public class DeployServiceUnitTest {
         
         // Setup test Deployment implementation
         TestDeploymentImpl testDeployImpl = Mockito.spy(new TestDeploymentImpl());
-        manager.addInstance(TestDeploymentImpl.class, testDeployImpl);
+        manager.addWorker(TestDeploymentImpl.class, testDeployImpl);
 
         // Setup DeploymentStateRecorder for assertions
         StateRecorder deployStateRecorder = new StateRecorder(rcommando);
-        manager.addInstance(StateRecorder.class, deployStateRecorder);
+        manager.addWorker(StateRecorder.class, deployStateRecorder);
 
         // Create DeployWorker under test
-        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando);
-        manager.addInstance(DeploymentWorker.class, deploymentWorker);
+        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando, new NotificationService(rcommando));
+        manager.addWorker(DeploymentWorker.class, deploymentWorker);
 
         // Start retask and submit deploy task 
         manager.start(Task.create("deploy.artifact")
@@ -113,12 +111,12 @@ public class DeployServiceUnitTest {
         RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
 
         // Setup instances
-        DaoSet instances = rcommando.getSetOf("instance");
+        Index instances = rcommando.getSetOf("instance");
         instances.get("inst1").set("app", "webserver", "group", "group:group", "host", "web01", "port", 8080, "state", InstanceState.Enabled);
         instances.get("inst2").set("app", "webserver", "group", "group:group", "host", "web02", "port", 8080, "state", InstanceState.Enabled);
         
         // Setup groups
-        DaoSet groups = rcommando.getSetOf("group");
+        Index groups = rcommando.getSetOf("group");
         groups.get("group").set("app", "webserver", "instances", Arrays.asList("inst1", "inst2"));
 
         // Setup artifact
@@ -127,15 +125,15 @@ public class DeployServiceUnitTest {
 
         // Setup spied test Deployment implementation
         TestDeploymentImpl deploymentImpl = Mockito.spy(new TestDeploymentImpl());
-        manager.addInstance(TestDeploymentImpl.class, deploymentImpl);
+        manager.addWorker(TestDeploymentImpl.class, deploymentImpl);
 
         // Setup test StateRecorder for assertions
         StateRecorder stateRecorder = new StateRecorder(rcommando);
-        manager.addInstance(StateRecorder.class, stateRecorder);
+        manager.addWorker(StateRecorder.class, stateRecorder);
 
         // Create DeployWorker under test
-        DeploymentWorker deployWorker = new DeploymentWorker(rcommando);
-        manager.addInstance(DeploymentWorker.class, deployWorker);
+        DeploymentWorker deployWorker = new DeploymentWorker(rcommando,  new NotificationService(rcommando));
+        manager.addWorker(DeploymentWorker.class, deployWorker);
 
         // Submit task to start deployment
         manager.start(Task.create("deploy.artifact")
@@ -167,8 +165,8 @@ public class DeployServiceUnitTest {
         // Setup instances and groups
         int numGroups = 50;
         String[][] hosts = {{"web01", "web02"}, {"web03", "web04"}, {"web05", "web06"}, {"web07", "web08"}};
-        DaoSet instanceSet = rcommando.getSetOf("instance");
-        DaoSet groups = rcommando.getSetOf("group");
+        Index instanceSet = rcommando.getSetOf("instance");
+        Index groups = rcommando.getSetOf("group");
         List<Dao> instances = new ArrayList<>();
         for (int i=0; i<numGroups; i++) {
             String groupId = "group" + i;
@@ -197,11 +195,11 @@ public class DeployServiceUnitTest {
         StateRecorder deployStateRecorder = new StateRecorder(rcommando);
 
         // Create Deploy Service for test
-        DeploymentWorker deployService = new DeploymentWorker(rcommando);
+        DeploymentWorker deployService = new DeploymentWorker(rcommando,  new NotificationService(rcommando));
 
-        manager.addInstance(TestDeploymentImpl.class, testDeploymentWorker);
-        manager.addInstance(StateRecorder.class, deployStateRecorder);
-        manager.addInstance(DeploymentWorker.class, deployService);
+        manager.addWorker(TestDeploymentImpl.class, testDeploymentWorker);
+        manager.addWorker(StateRecorder.class, deployStateRecorder);
+        manager.addWorker(DeploymentWorker.class, deployService);
 
         // Submit task to start deployment
         manager.start(Task.create("deploy.artifact")
@@ -231,25 +229,25 @@ public class DeployServiceUnitTest {
         RetaskManager manager = Retask.init(redisClient, rcommando, recruiter());
         
         // Setup group
-        DaoSet groups = rcommando.getSetOf("group");
+        Index groups = rcommando.getSetOf("group");
         groups.get("group").set("app", "webserver");
     	
 
         // Setup instances
-        DaoSet instances = rcommando.getSetOf("instance");
+        Index instances = rcommando.getSetOf("instance");
         instances.get("inst").set("app", "webserver", "group", "group:group", "host", "web01", "port", 8080, "state", InstanceState.Enabled);
         
         // Setup test Deployment implementation
         TestDeploymentImpl testDeployImpl = Mockito.spy(new TestDeploymentImpl());
-        manager.addInstance(TestDeploymentImpl.class, testDeployImpl);
+        manager.addWorker(TestDeploymentImpl.class, testDeployImpl);
 
         // Setup DeploymentStateRecorder for assertions
         StateRecorder deployStateRecorder = new StateRecorder(rcommando);
-        manager.addInstance(StateRecorder.class, deployStateRecorder);
+        manager.addWorker(StateRecorder.class, deployStateRecorder);
 
         // Create DeployWorker under test
-        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando);
-        manager.addInstance(DeploymentWorker.class, deploymentWorker);
+        DeploymentWorker deploymentWorker = new DeploymentWorker(rcommando, new NotificationService(rcommando));
+        manager.addWorker(DeploymentWorker.class, deploymentWorker);
 
         // Start retask and submit deploy task 
         manager.start(Task.create("deploy.restart")

@@ -5,9 +5,9 @@ import java.util.Date;
 
 import org.apache.http.cookie.Cookie;
 
-import com.jarcadia.rcommando.proxy.DaoProxy;
+import com.jarcadia.rcommando.proxy.Proxy;
 
-public interface JarcadiaCookie extends Cookie, DaoProxy {
+public interface JarcadiaCookie extends Cookie, Proxy {
 	
 	public static MethodHandles.Lookup createLookup() {
 		return MethodHandles.lookup();

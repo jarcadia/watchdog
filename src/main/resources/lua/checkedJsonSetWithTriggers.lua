@@ -24,8 +24,8 @@ local function doSet()
 end
 local prev = doSet();
 if (prev ~= ARGV[3]) then
-    local change = '{"id": "' .. ARGV[1] .. '", "field":"' .. ARGV[2] .. '", "timestamp":' .. ARGV[4] .. ', previous":' .. prev .. ',"current":' .. ARGV[3] .. '}'
-    redis.call('hmset', KEYS[3], 'routingKey', ARGV[5], 'params', change);
+    local changedValue = '{"id": "' .. ARGV[1] .. '", "field":"' .. ARGV[2] .. '", "timestamp":' .. ARGV[4] .. ', previous":' .. prev .. ',"current":' .. ARGV[3] .. '}'
+    redis.call('hmset', KEYS[3], 'routingKey', ARGV[5], 'params', changedValue);
     redis.call('rpush', KEYS[2], KEYS[3]);
 end
 return prev;

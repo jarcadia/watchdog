@@ -19,8 +19,8 @@ import org.slf4j.LoggerFactory;
 import com.jarcadia.rcommando.Dao;
 import com.jarcadia.rcommando.DaoValue;
 import com.jarcadia.rcommando.RedisCommando;
-import com.jarcadia.rcommando.SetResult;
-import com.jarcadia.rcommando.proxy.DaoProxy;
+import com.jarcadia.rcommando.Modification;
+import com.jarcadia.rcommando.proxy.Proxy;
 import com.jarcadia.watchdog.annontation.MonitoredValue;
 import com.jarcadia.watchdog.annontation.MonitoredValues;
 import com.jarcadia.watchdog.exception.WatchdogException;
@@ -37,7 +37,7 @@ public class WatchdogMonitoringFactory {
 	}
 
 	@SuppressWarnings("unchecked")
-	public void setupMonitoring(Class<? extends DaoProxy> proxyClass) {
+	public void setupMonitoring(Class<? extends Proxy> proxyClass) {
 		if (Group.class.isAssignableFrom(proxyClass)) {
 			setupMonitoredFieldForGroup((Class<? extends Group>) proxyClass);
     	}
@@ -116,7 +116,7 @@ public class WatchdogMonitoringFactory {
 		rcommando.registerFieldChangeCallback(setKey, fieldName, (dao, field, before, after) -> {
 			if (type.equals(dao.get("type").asString())) {
 				AlarmLevel level = lookup.get(after.asString());
-				Optional<SetResult> alarmLevelChange = level == null ? dao.clear(alarmName) : dao.set(alarmName, level);
+				Optional<Modification> alarmLevelChange = level == null ? dao.clear(alarmName) : dao.set(alarmName, level);
                 if (alarmLevelChange.isPresent()) {
                 	DaoValue value = alarmLevelChange.get().getChanges().get(0).getAfter();
                     Dao alarm = rcommando.getDao("alarm." + setKey, dao.getId() + "." + fieldName);
